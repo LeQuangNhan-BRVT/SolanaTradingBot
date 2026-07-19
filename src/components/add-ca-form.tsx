@@ -1,0 +1,12 @@
+"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Plus, X } from "lucide-react";
+import type { CandidateAssessment } from "@/lib/types";
+
+export function AddCaForm(){
+ const router=useRouter();
+ const [open,setOpen]=useState(false),[value,setValue]=useState(""),[loading,setLoading]=useState(false),[message,setMessage]=useState<string|null>(null),[assessment,setAssessment]=useState<CandidateAssessment|null>(null);
+ async function submit(event:React.FormEvent){event.preventDefault();setLoading(true);setMessage(null);setAssessment(null);try{const response=await fetch("/api/candidates",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mint:value.trim()})});const data=await response.json() as {message?:string;error?:string;assessment?:CandidateAssessment};setMessage(data.message??data.error??"Không thể xử lý CA");if(data.assessment){setAssessment(data.assessment);router.refresh()}}catch{setMessage("Không thể kết nối máy chủ.")}finally{setLoading(false)}}
+ return <><button className="primary-button" onClick={()=>setOpen(true)}><Plus size={17}/> Thêm CA</button>{open&&<div className="modal-backdrop" role="presentation" onMouseDown={()=>setOpen(false)}><section className="modal" role="dialog" aria-modal="true" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">ON-CHAIN INSPECTION</span><h2>Kiểm tra contract address</h2></div><button className="icon-button" onClick={()=>setOpen(false)} aria-label="Đóng"><X size={18}/></button></div><form onSubmit={submit}><label htmlFor="mint">Solana mint address</label><textarea id="mint" required value={value} onChange={e=>setValue(e.target.value)} placeholder="Dán CA vào đây…" rows={3}/><p className="field-hint">Kết quả được lưu vào PostgreSQL. Dữ liệu chưa xác minh sẽ chặn giao dịch.</p>{message&&<p className="form-message">{message}</p>}{assessment&&<div className="check-list">{assessment.checks.map(item=><div className={`check-row ${item.status}`} key={item.code}><strong>{item.status==="pass"?"✓":item.status==="fail"?"✕":"?"} {item.label}</strong><span>{item.detail}</span></div>)}</div>}<div className="modal-actions"><button type="button" className="ghost-button" onClick={()=>setOpen(false)}>Đóng</button><button className="primary-button" disabled={loading} type="submit">{loading?"Đang xác minh…":"Xác minh và lưu"}</button></div></form></section></div>}</>;
+}
