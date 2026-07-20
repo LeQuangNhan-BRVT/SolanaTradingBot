@@ -22,6 +22,20 @@
       "when": 1784456855262,
       "tag": "0002_plain_tinkerer",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784529086653,
+      "tag": "0003_crazy_justin_hammer",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784529843649,
+      "tag": "0004_watery_overlord",
+      "breakpoints": true
     }
   ]
 }

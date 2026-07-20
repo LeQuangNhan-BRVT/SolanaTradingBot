@@ -6,7 +6,7 @@ import { inspectMint, MintValidationError } from "@/lib/solana";
 import type { Candidate } from "@/lib/types";
 import { inspectMarket } from "@/lib/market";
 import { verifyPumpMigration } from "@/lib/migration";
-import { scheduleMarketRefresh } from "@/queue/client";
+import { scheduleDeepAnalysis, scheduleMarketRefresh } from "@/queue/client";
 import { inspectPumpCreator } from "@/lib/creator";
 export const runtime = "nodejs";
 const requestSchema = z.object({ mint: z.string().trim().min(32).max(44) });
@@ -24,10 +24,11 @@ export async function POST(request: Request) {
     candidate.creator = creator?.creator ?? null;
     const persisted = await saveMintAssessment(mint, candidate, result.checks, market, migration, creator);
     await scheduleMarketRefresh(mint.mint).catch((error) => console.error("Unable to schedule market refresh", error));
-    return NextResponse.json({ message: candidate.status === "rejected" ? "CA hợp lệ nhưng không vượt qua hard gate." : "Đã xác minh mint. Token tiếp tục được theo dõi cho đến khi đủ dữ liệu migration và bundle.", persisted, assessment: { candidate, mint, checks: result.checks, summary: "Fail-closed: chưa giao dịch khi còn kiểm tra quan trọng chưa xác minh." } });
+    const analysisJob = creator ? await scheduleDeepAnalysis({ mint: mint.mint, tokenProgram: mint.tokenProgram, mintAuthority: mint.mintAuthority, freezeAuthority: mint.freezeAuthority, poolAddress: market?.poolAddress ?? null, creator: { creator: creator.creator, user: creator.user, feePayer: creator.feePayer, blockTime: creator.blockTime.toISOString() }, migration: migration ? { blockTime: migration.blockTime.toISOString() } : null }).catch((error) => { console.error("Unable to schedule deep analysis", error); return null; }) : null;
+    return NextResponse.json({ message: candidate.status === "rejected" ? "CA hợp lệ nhưng không vượt qua hard gate." : "Đã xác minh mint. Holder và bundle analysis đang chạy nền.", persisted: { ...persisted, analysisJobId: analysisJob?.id ?? null }, assessment: { candidate, mint, checks: result.checks, summary: "Fail-closed: chưa giao dịch khi còn kiểm tra quan trọng chưa xác minh." } }, { status: 202 });
   } catch (error) {
     if (error instanceof z.ZodError || error instanceof MintValidationError) return NextResponse.json({ error: error instanceof MintValidationError ? error.message : "CA Solana không hợp lệ." }, { status: 422 });
     console.error("Mint inspection failed", error);
-    return NextResponse.json({ error: "Không thể truy vấn Solana RPC hoặc database. Vui lòng thử lại." }, { status: 503 });
+    return NextResponse.json({ error: "Không thể truy vấn Solana RPC hoặc database. Vui lòng thử lại.", ...(process.env.NODE_ENV === "development" ? { detail: error instanceof Error ? error.message : String(error) } : {}) }, { status: 503 });
   }
 }
