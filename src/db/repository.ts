@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDatabase, hasDatabase } from "./client";
-import { auditLogs, bundleAssessments, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, walletFundingEdges, wallets } from "./schema";
+import { auditLogs, bundleAssessments, fills, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, walletFundingEdges, wallets } from "./schema";
 import { normalizeTags, type WatchAlertConfig, type WatchlistPatch } from "@/lib/watchlist";
 import type { Candidate, MintInspection, RiskCheck } from "@/lib/types";
 import type { MarketInspection } from "@/lib/market";
@@ -9,7 +9,7 @@ import type { CreatorInspection } from "@/lib/creator";
 import type { HolderGraph } from "@/lib/graph";
 import type { BundleAssessment } from "@/lib/bundle";
 import type { JupiterQuote } from "@/lib/shadow";
-import type { LiveSwapExecution } from "@/lib/live";
+import type { LiveSwapExecution, PreparedSwap } from "@/lib/live";
 import type { EntryDecision, PortfolioState } from "@/lib/strategy";
 import { defaultShadowSettings, type ShadowSettings } from "@/lib/settings";
 
@@ -181,7 +181,7 @@ export async function reserveLiveEntry(mint: string, riskAssessmentId: string, q
     if (!token || token.status !== "eligible") throw new Error("Token khong con eligible.");
     const [openPosition] = await tx.select({ id: positions.id }).from(positions).where(and(eq(positions.tokenId, token.id), eq(positions.mode, "live"), sql`${positions.status} in ('open','closing')`)).limit(1);
     if (openPosition) return { duplicate: true as const, orderId: null, positionId: openPosition.id };
-    const [pendingOrder] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.tokenId, token.id), eq(orders.mode, "live"), eq(orders.side, "buy"), sql`${orders.status} in ('created','quoted','submitted')`)).limit(1);
+    const [pendingOrder] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.tokenId, token.id), eq(orders.mode, "live"), eq(orders.side, "buy"), sql`${orders.status} in ('created','quoted','simulated','submitted')`)).limit(1);
     if (pendingOrder) return { duplicate: true as const, orderId: pendingOrder.id, positionId: null };
     const idempotencyKey = `live-entry:v1:${token.id}:${riskAssessmentId}:${quote.inAmount}:${Math.floor(Date.now() / 60_000)}`;
     const [signal] = await tx.insert(signals).values({ tokenId: token.id, riskAssessmentId, strategyVersion: "live-v1", idempotencyKey, score: decision.score.toString(), payload: { reason: "strategy_accepted", quoteSource: "jupiter", inputMint: quote.inputMint, outputMint: quote.outputMint, metrics: decision.metrics } }).onConflictDoNothing().returning({ id: signals.id });
@@ -192,28 +192,45 @@ export async function reserveLiveEntry(mint: string, riskAssessmentId: string, q
   });
 }
 
-export async function markLiveOrderSubmitted(orderId: string, signature: string) {
+// Persists the signed transaction's signature and expiry before broadcast so a crash can always be recovered.
+export async function markLiveOrderPrepared(orderId: string, prepared: PreparedSwap) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  const [order] = await getDatabase().update(orders).set({ status: "simulated", signature: prepared.signature, wallet: prepared.wallet, lastValidBlockHeight: prepared.lastValidBlockHeight, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.status, "quoted"))).returning({ id: orders.id });
+  if (!order) throw new Error(`Live order ${orderId} is no longer reserved.`);
+  return order;
+}
+
+export async function markLiveOrderSent(orderId: string) {
   if (!hasDatabase()) return null;
-  const [order] = await getDatabase().update(orders).set({ status: "submitted", signature, updatedAt: new Date() }).where(eq(orders.id, orderId)).returning({ id: orders.id });
+  const [order] = await getDatabase().update(orders).set({ status: "submitted", sentAt: new Date(), updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.status, "simulated"))).returning({ id: orders.id });
   return order ?? null;
 }
 
-export async function markLiveOrderFailed(orderId: string, error: string) {
-  if (!hasDatabase()) return null;
-  const db = getDatabase();
-  const [order] = await db.update(orders).set({ status: "failed", error: error.slice(0, 2_000), updatedAt: new Date() }).where(eq(orders.id, orderId)).returning({ id: orders.id, side: orders.side });
-  return order ?? null;
-}
+const PENDING_LIVE_STATUSES = ["quoted", "simulated", "submitted"] as const;
 
-export async function confirmLiveEntry(orderId: string, mint: string, quote: JupiterQuote, execution: LiveSwapExecution) {
+// Closes out an order that definitively did not execute; a failed sell returns its position to open so exits retry.
+export async function failLiveOrder(orderId: string, error: string) {
   if (!hasDatabase()) return null;
-  if (BigInt(execution.outputDeltaRaw) <= 0n) throw new Error("Live entry output delta is zero.");
   return getDatabase().transaction(async (tx) => {
-    const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "buy"))).limit(1);
-    if (!order) return { duplicate: true as const, orderId: null, positionId: null };
-    await tx.update(orders).set({ status: "confirmed", signature: execution.signature, quoteRaw: { ...quote, execution }, updatedAt: new Date() }).where(eq(orders.id, order.id));
-    const [position] = await tx.insert(positions).values({ tokenId: order.tokenId, mode: "live", status: "open", quantityRaw: execution.outputDeltaRaw, costLamports: quote.inAmount }).returning({ id: positions.id });
-    await tx.insert(auditLogs).values({ eventType: "live.entry.confirmed", entityType: "order", entityId: order.id, payload: { mint, positionId: position.id, signature: execution.signature, inputLamports: quote.inAmount, outputAmountRaw: execution.outputDeltaRaw, wallet: execution.wallet, priorityFeeLamports: execution.prioritizationFeeLamports } });
+    const [order] = await tx.update(orders).set({ status: "failed", error: error.slice(0, 2_000), updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, side: orders.side, tokenId: orders.tokenId });
+    if (!order) return null;
+    if (order.side === "sell") await tx.update(positions).set({ status: "open", updatedAt: new Date() }).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "live"), eq(positions.status, "closing")));
+    await tx.insert(auditLogs).values({ eventType: "live.order.failed", entityType: "order", entityId: order.id, payload: { side: order.side, error: error.slice(0, 500) } });
+    return order;
+  });
+}
+
+// Idempotent: only the first caller (live path or recovery job) moves the order to confirmed and opens the position.
+export async function confirmLiveEntry(orderId: string, execution: LiveSwapExecution) {
+  if (!hasDatabase()) return null;
+  if (BigInt(execution.tokenAmountRaw) <= 0n) throw new Error("Live entry token amount is zero.");
+  return getDatabase().transaction(async (tx) => {
+    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw });
+    if (!order) return { duplicate: true as const, orderId, positionId: null };
+    await tx.update(orders).set({ quoteRaw: { ...(order.quoteRaw ?? {}), execution } }).where(eq(orders.id, order.id));
+    await tx.insert(fills).values({ orderId: order.id, signature: execution.signature, baseAmountRaw: execution.tokenAmountRaw, quoteAmountRaw: execution.lamports, feeLamports: execution.feeLamports, slot: execution.slot === null ? null : BigInt(execution.slot), filledAt: execution.blockTime ?? new Date() }).onConflictDoNothing();
+    const [position] = await tx.insert(positions).values({ tokenId: order.tokenId, mode: "live", status: "open", quantityRaw: execution.tokenAmountRaw, costLamports: execution.lamports }).returning({ id: positions.id });
+    await tx.insert(auditLogs).values({ eventType: "live.entry.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, signature: execution.signature, costLamports: execution.lamports, feeLamports: execution.feeLamports, tokenAmountRaw: execution.tokenAmountRaw, wallet: execution.wallet } });
     return { duplicate: false as const, orderId: order.id, positionId: position.id };
   });
 }
@@ -260,38 +277,74 @@ export async function savePositionMark(positionId: string, quote: JupiterQuote, 
 export async function reserveLiveExit(positionId: string, mint: string, quote: JupiterQuote, reason: string, pnlBps: number) {
   if (!hasDatabase()) return null;
   return getDatabase().transaction(async (tx) => {
-    const [position] = await tx.select().from(positions).where(and(eq(positions.id, positionId), eq(positions.mode, "live"), eq(positions.status, "open"))).limit(1);
+    // The conditional open -> closing transition is the double-exit guard, so each retry after a failure gets a fresh key.
+    const [position] = await tx.update(positions).set({ status: "closing", updatedAt: new Date() }).where(and(eq(positions.id, positionId), eq(positions.mode, "live"), eq(positions.status, "open"))).returning();
     if (!position) return { duplicate: true as const, orderId: null };
-    const idempotencyKey = `live-exit:${position.id}`;
+    const idempotencyKey = `live-exit:${position.id}:${Date.now()}`;
     const [order] = await tx.insert(orders).values({ tokenId: position.tokenId, mode: "live", side: "sell", status: "quoted", idempotencyKey, requestedAmountRaw: position.quantityRaw, quoteRaw: { ...quote, exitReason: reason, pnlBps } }).onConflictDoNothing().returning({ id: orders.id });
-    if (!order) return { duplicate: true as const, orderId: null };
-    await tx.update(positions).set({ status: "closing", updatedAt: new Date() }).where(eq(positions.id, position.id));
+    // Throwing rolls back the closing transition so the position is not stranded.
+    if (!order) throw new Error(`Live exit order for ${position.id} could not be reserved.`);
     await tx.insert(auditLogs).values({ eventType: "live.exit.reserved", entityType: "order", entityId: order.id, payload: { mint, positionId, reason, pnlBps, expectedProceedsLamports: quote.outAmount } });
     return { duplicate: false as const, orderId: order.id };
   });
 }
 
-export async function failLiveExit(positionId: string, orderId: string, error: string) {
+// Idempotent: realized PnL uses the net SOL actually received, never the quote.
+export async function confirmLiveExit(orderId: string, execution: LiveSwapExecution) {
   if (!hasDatabase()) return null;
   return getDatabase().transaction(async (tx) => {
-    await tx.update(orders).set({ status: "failed", error: error.slice(0, 2_000), updatedAt: new Date() }).where(eq(orders.id, orderId));
-    await tx.update(positions).set({ status: "open", updatedAt: new Date() }).where(and(eq(positions.id, positionId), eq(positions.status, "closing")));
-    return { orderId, positionId };
+    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "sell"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw });
+    if (!order) return { duplicate: true as const, orderId, positionId: null, realizedPnlLamports: null };
+    const meta = (order.quoteRaw ?? {}) as { exitReason?: string; pnlBps?: number };
+    await tx.update(orders).set({ quoteRaw: { ...(order.quoteRaw ?? {}), execution } }).where(eq(orders.id, order.id));
+    await tx.insert(fills).values({ orderId: order.id, signature: execution.signature, baseAmountRaw: execution.tokenAmountRaw, quoteAmountRaw: execution.lamports, feeLamports: execution.feeLamports, slot: execution.slot === null ? null : BigInt(execution.slot), filledAt: execution.blockTime ?? new Date() }).onConflictDoNothing();
+    const [position] = await tx.select().from(positions).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "live"), inArray(positions.status, ["closing", "open"]))).orderBy(desc(positions.openedAt)).limit(1);
+    if (!position) { await tx.insert(auditLogs).values({ eventType: "live.exit.orphaned", entityType: "order", entityId: order.id, payload: { signature: execution.signature } }); return { duplicate: false as const, orderId: order.id, positionId: null, realizedPnlLamports: null }; }
+    const realizedPnl = (BigInt(execution.lamports) - BigInt(position.costLamports)).toString();
+    const remaining = BigInt(position.quantityRaw) - BigInt(execution.tokenAmountRaw);
+    await tx.update(positions).set({ status: "closed", realizedPnlLamports: realizedPnl, closedAt: execution.blockTime ?? new Date(), updatedAt: new Date() }).where(eq(positions.id, position.id));
+    await tx.insert(auditLogs).values({ eventType: "live.exit.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, reason: meta.exitReason ?? null, quotedPnlBps: meta.pnlBps ?? null, signature: execution.signature, proceedsLamports: execution.lamports, feeLamports: execution.feeLamports, realizedPnlLamports: realizedPnl, remainingRaw: remaining > 0n ? remaining.toString() : "0", wallet: execution.wallet } });
+    return { duplicate: false as const, orderId: order.id, positionId: position.id, realizedPnlLamports: realizedPnl };
   });
 }
 
-export async function confirmLiveExit(positionId: string, mint: string, orderId: string, quote: JupiterQuote, reason: string, pnlBps: number, execution: LiveSwapExecution) {
-  if (!hasDatabase()) return null;
-  return getDatabase().transaction(async (tx) => {
-    const [position] = await tx.select().from(positions).where(and(eq(positions.id, positionId), eq(positions.mode, "live"), eq(positions.status, "closing"))).limit(1);
-    if (!position) return { duplicate: true as const, orderId: null };
-    const proceeds = BigInt(execution.outputDeltaRaw) > 0n ? execution.outputDeltaRaw : quote.outAmount;
-    const realizedPnl = (BigInt(proceeds) - BigInt(position.costLamports)).toString();
-    await tx.update(orders).set({ status: "confirmed", signature: execution.signature, quoteRaw: { ...quote, execution, exitReason: reason, pnlBps }, updatedAt: new Date() }).where(eq(orders.id, orderId));
-    await tx.update(positions).set({ status: "closed", realizedPnlLamports: realizedPnl, closedAt: new Date(), updatedAt: new Date() }).where(eq(positions.id, position.id));
-    await tx.insert(auditLogs).values({ eventType: "live.exit.confirmed", entityType: "order", entityId: orderId, payload: { mint, positionId, reason, pnlBps, signature: execution.signature, proceedsLamports: proceeds, realizedPnlLamports: realizedPnl, wallet: execution.wallet } });
-    return { duplicate: false as const, orderId };
-  });
+export async function listPendingLiveOrders(olderThanMs: number) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, wallet: orders.wallet, lastValidBlockHeight: orders.lastValidBlockHeight, updatedAt: orders.updatedAt, mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES]), sql`${orders.updatedAt} < now() - (${olderThanMs} * interval '1 millisecond')`));
+}
+
+// A position left in `closing` with no pending sell order would never be exited again.
+export async function releaseOrphanClosingPositions() {
+  if (!hasDatabase()) return [];
+  const rows = await getDatabase().update(positions).set({ status: "open", updatedAt: new Date() }).where(and(eq(positions.mode, "live"), eq(positions.status, "closing"), sql`not exists (select 1 from ${orders} where ${orders.tokenId} = ${positions.tokenId} and ${orders.mode} = 'live' and ${orders.side} = 'sell' and ${orders.status} in ('quoted','simulated','submitted'))`)).returning({ id: positions.id });
+  return rows.map((row) => row.id);
+}
+
+// SOL committed today: confirmed buy fills plus buys still pending.
+export async function getLiveSpentTodayLamports() {
+  if (!hasDatabase()) return 0n;
+  const db = getDatabase();
+  const [filled] = await db.select({ total: sql<string>`coalesce(sum(${fills.quoteAmountRaw}),0)::text` }).from(fills).innerJoin(orders, eq(fills.orderId, orders.id)).where(and(eq(orders.mode, "live"), eq(orders.side, "buy"), sql`${fills.filledAt} >= date_trunc('day', now())`));
+  const [pending] = await db.select({ total: sql<string>`coalesce(sum(${orders.requestedAmountRaw}),0)::text` }).from(orders).where(and(eq(orders.mode, "live"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
+  return BigInt(filled?.total ?? "0") + BigInt(pending?.total ?? "0");
+}
+
+export async function getLiveExpectedHoldings() {
+  if (!hasDatabase()) return { expected: new Map<string, bigint>(), pendingMints: new Set<string>() };
+  const db = getDatabase();
+  const rows = await db.select({ mint: tokens.mint, quantity: sql<string>`sum(${positions.quantityRaw})::text` }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), inArray(positions.status, ["open", "closing"]))).groupBy(tokens.mint);
+  const pending = await db.select({ mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
+  return { expected: new Map(rows.map((row) => [row.mint, BigInt(row.quantity)])), pendingMints: new Set(pending.map((row) => row.mint)) };
+}
+
+export async function listRecentLiveOrders(limit = 30) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, error: orders.error, requestedAmountRaw: orders.requestedAmountRaw, createdAt: orders.createdAt, updatedAt: orders.updatedAt, mint: tokens.mint, symbol: tokens.symbol, filledLamports: fills.quoteAmountRaw, feeLamports: fills.feeLamports }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).leftJoin(fills, eq(fills.orderId, orders.id)).where(eq(orders.mode, "live")).orderBy(desc(orders.createdAt)).limit(limit);
+}
+
+export async function listOpenPositionsForPricing() {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: positions.id, mode: positions.mode, mint: tokens.mint, decimals: tokens.decimals, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(inArray(positions.mode, ["shadow", "live"]), eq(positions.status, "open")));
 }
 
 export async function saveShadowExit(positionId: string, mint: string, quote: JupiterQuote, reason: string, pnlBps: number) {
@@ -339,16 +392,31 @@ export async function listShadowPerformanceTrades() {
   return Promise.all(rows.map(async row=>{const [entryAudit]=await db.select({orderId:auditLogs.entityId}).from(auditLogs).where(and(eq(auditLogs.eventType,"shadow.entry.simulated"),sql`${auditLogs.payload}->>'positionId' = ${row.positionId}`)).limit(1);if(!entryAudit)return{...row,strategyVersion:"unknown",signalScore:null,metrics:null};const [entry]=await db.select({strategyVersion:signals.strategyVersion,score:signals.score,payload:signals.payload}).from(orders).leftJoin(signals,eq(orders.signalId,signals.id)).where(eq(orders.id,entryAudit.orderId)).limit(1);const metrics=entry?.payload&&typeof entry.payload.metrics==="object"?entry.payload.metrics as Record<string,unknown>:null;return{...row,strategyVersion:entry?.strategyVersion??"unknown",signalScore:entry?.score?Number(entry.score):null,metrics}}));
 }
 
-export async function getTradingControls() {
-  if (!hasDatabase()) return { entriesPaused: true, reason: "Database unavailable", updatedAt: null as Date|null };
+export type TradingControls = { entriesPaused: boolean; haltAll: boolean; reason: string | null; updatedAt: Date | null };
+// Fail-safe defaults: entries stay paused until explicitly resumed; haltAll blocks every live send including exits.
+export async function getTradingControls(): Promise<TradingControls> {
+  if (!hasDatabase()) return { entriesPaused: true, haltAll: false, reason: "Database unavailable", updatedAt: null };
   const [row]=await getDatabase().select().from(runtimeSettings).where(eq(runtimeSettings.key,"trading-controls")).limit(1);const value=row?.value??{};
-  return { entriesPaused: value.entriesPaused !== false, reason: typeof value.reason==="string"?value.reason:null, updatedAt: row?.updatedAt??null };
+  return { entriesPaused: value.entriesPaused !== false || value.haltAll === true, haltAll: value.haltAll === true, reason: typeof value.reason==="string"?value.reason:null, updatedAt: row?.updatedAt??null };
 }
 
-export async function updateTradingControls(entriesPaused:boolean,reason:string|null) {
-  if (!hasDatabase()) throw new Error("Database chưa cấu hình."); const db=getDatabase(),now=new Date(),value={entriesPaused,reason,changedAt:now.toISOString()};
+export async function updateTradingControls(entriesPaused:boolean,reason:string|null,haltAll?:boolean) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình."); const db=getDatabase(),now=new Date(),current=await getTradingControls(),halt=haltAll??current.haltAll,value={entriesPaused:entriesPaused||halt,haltAll:halt,reason,changedAt:now.toISOString()};
   const [row]=await db.insert(runtimeSettings).values({key:"trading-controls",value,updatedAt:now}).onConflictDoUpdate({target:runtimeSettings.key,set:{value,updatedAt:now}}).returning();
-  await db.insert(auditLogs).values({eventType:entriesPaused?"trading.entries.paused":"trading.entries.resumed",entityType:"runtime_setting",entityId:"trading-controls",payload:value}); return row;
+  await db.insert(auditLogs).values({eventType:halt?"trading.halted":entriesPaused?"trading.entries.paused":"trading.entries.resumed",entityType:"runtime_setting",entityId:"trading-controls",payload:value}); return row;
+}
+
+export async function getRuntimeValue<T extends Record<string, unknown>>(key: string): Promise<T | null> {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().select().from(runtimeSettings).where(eq(runtimeSettings.key, key)).limit(1);
+  return (row?.value as T | undefined) ?? null;
+}
+
+export async function setRuntimeValue(key: string, value: Record<string, unknown>) {
+  if (!hasDatabase()) return null;
+  const now = new Date();
+  const [row] = await getDatabase().insert(runtimeSettings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: runtimeSettings.key, set: { value, updatedAt: now } }).returning();
+  return row;
 }
 
 export async function getShadowSettings():Promise<ShadowSettings>{const defaults=defaultShadowSettings();if(!hasDatabase())return defaults;const[row]=await getDatabase().select().from(runtimeSettings).where(eq(runtimeSettings.key,"shadow-settings")).limit(1);return{...defaults,...(row?.value??{})} as ShadowSettings;}

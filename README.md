@@ -38,7 +38,9 @@ Wallet data is read live from RPC on page load (Helius when `HELIUS_API_KEY` is 
 2. **Worker jobs** (BullMQ on Redis):
    - `market-refresh` every 5 minutes.
    - `holder-bundle-analysis` once, then `holder-analysis` every 15 minutes — top holders, direct funders, creator cluster and bundle evidence.
-   - `shadow-scan` every 60 seconds — exits first, then entries for eligible tokens.
+   - `shadow-scan` every 60 seconds — exits first, then entries for eligible tokens with auto-trade enabled.
+   - `live-recovery` every 30 seconds and `live-reconcile` every 5 minutes (see Live trading).
+   - A 5-second price loop that queues `exit-check` jobs for positions near a threshold.
 3. **Risk engine** — six critical hard gates. Any `fail` rejects the token; any `unknown` keeps it in `monitoring`. Only tokens that pass every gate become `eligible`.
 
 | Gate | Requirement |
@@ -70,26 +72,32 @@ Set with `TRADING_MODE`:
 
 Entries and exits use the same strategy and portfolio limits in shadow and live mode: signal score, price impact, volume/liquidity ratio, maximum open positions, total exposure, daily loss limit, consecutive losses and re-entry cooldown. Exits are evaluated in priority order: risk exit (token no longer eligible), stop loss, take profit, time stop. Limits are configured in `/settings` or via the `SHADOW_*` variables in `.env.example`. Entries default to paused until explicitly resumed.
 
-### Live trading — not production-ready
+### Live trading
 
-Live execution code exists in `src/lib/live.ts`, but it is **not safe for real funds yet**. Known gaps:
-
-- No reconciliation between wallet balances and database positions.
-- Orders stuck in `submitted` after a process crash are not recovered automatically.
-- PnL ignores swap fees and priority fees.
-- Stop loss is only checked every 60 seconds by `shadow-scan`.
-- No automated tests cover the live path.
+Live execution has crash-safety, reconciliation and hard caps, but it has **not been exercised with real funds**. Start with a dedicated hot wallet holding only what you accept to lose, and watch `/live-safety` closely.
 
 Live mode only runs when all of these are set:
 
 - `TRADING_MODE=live`
 - `LIVE_TRADING_ENABLED=true`
 - `SOLANA_RPC_URL`
-- One of `SOLANA_PRIVATE_KEY_BASE58`, `SOLANA_PRIVATE_KEY_JSON` or `SOLANA_KEYPAIR_PATH`
+- One of `SOLANA_PRIVATE_KEY_BASE58`, `SOLANA_PRIVATE_KEY_JSON` or `SOLANA_KEYPAIR_PATH` (plaintext; an encrypted keystore is planned)
 
-Optional tuning: `JUPITER_SWAP_URL`, `JUPITER_API_KEY`, `JUPITER_DYNAMIC_SLIPPAGE`, `LIVE_MAX_PRIORITY_FEE_LAMPORTS` (default 500000), `LIVE_PRIORITY_LEVEL` (default `high`), `LIVE_SEND_MAX_RETRIES` (default 2), `LIVE_SKIP_PREFLIGHT`.
+**Order lifecycle.** `quoted` (reserved) → `simulated` (signed and simulated; signature and blockhash expiry persisted *before* broadcast) → `submitted` → `confirmed` or `failed`. Amounts are read from the confirmed transaction: entry cost is the total SOL that left the wallet (swap, network and priority fees, token-account rent) and exit proceeds are net of fees. Every confirmation writes a row to `fills`. Confirmations are idempotent, so the live path and the recovery job can never open a position twice.
 
-Every swap is simulated with signature verification before sending, and fills are recorded from on-chain balance deltas after confirmation.
+**Recovery** (`live-recovery`, every 30s). Pending live orders older than 90s are checked with `getSignatureStatuses`: landed transactions are confirmed from on-chain data, failed ones are closed out, and unseen ones are failed only after their blockhash has expired. A failed sell returns the position to `open` so the exit is retried; a `closing` position without a pending sell order is released.
+
+**Reconciliation** (`live-reconcile`, every 5 minutes, live mode only). Wallet token balances are compared with open live positions. If the wallet holds less than the database expects, entries are paused and a critical alert is sent. Mints with pending orders are skipped.
+
+**Controls.**
+- *Pause entries* blocks new buys; exits (risk exit, stop loss, take profit, time stop) keep protecting open positions.
+- *Emergency halt* blocks every live send, including exits. Both are re-checked right before each broadcast.
+
+**Hard caps** (env only, not editable from the dashboard): `LIVE_MAX_ENTRY_LAMPORTS` (default 0.1 SOL), `LIVE_DAILY_SPEND_LIMIT_LAMPORTS` (default 0.3 SOL, includes pending buys) and `LIVE_MIN_SOL_RESERVE_LAMPORTS` (default 0.05 SOL left in the wallet after an entry plus fee headroom). An entry larger than the cap is rejected, never resized.
+
+**Fast exits.** The worker polls Jupiter Price API v3 every `PRICE_LOOP_INTERVAL_MS` (default 5000) for open positions in the active mode. When the estimated PnL is within 3 percentage points of the stop loss or take profit, it queues an `exit-check` that decides with an exact Jupiter quote. Prices are only used as a trigger, never for accounting.
+
+Optional tuning: `JUPITER_SWAP_URL`, `JUPITER_QUOTE_URL`, `JUPITER_PRICE_URL`, `JUPITER_API_KEY`, `JUPITER_DYNAMIC_SLIPPAGE`, `LIVE_MAX_PRIORITY_FEE_LAMPORTS` (default 500000), `LIVE_PRIORITY_LEVEL` (default `high`), `LIVE_SEND_MAX_RETRIES` (default 2), `LIVE_SKIP_PREFLIGHT`.
 
 ## Database rules
 

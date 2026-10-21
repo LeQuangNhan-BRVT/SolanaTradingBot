@@ -11,6 +11,14 @@ function redisConnection() {
   return connection;
 }
 
+// Best-effort mutual exclusion across worker jobs; returns null when another holder owns the lock.
+export async function withRedisLock<T>(key: string, ttlSeconds: number, run: () => Promise<T>): Promise<T | null> {
+  const redis = redisConnection(), token = `${process.pid}:${Date.now()}:${Math.random()}`;
+  if (await redis.set(`aegis:lock:${key}`, token, "EX", ttlSeconds, "NX") !== "OK") return null;
+  try { return await run(); }
+  finally { await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0", 1, `aegis:lock:${key}`, token); }
+}
+
 export function analysisQueue() { queue ??= new Queue(ANALYSIS_QUEUE, { connection: redisConnection() }); return queue; }
 
 export async function getQueueHealth() {
@@ -44,6 +52,17 @@ export async function scheduleDeepAnalysis(data: Omit<DeepAnalysisJob, "includeB
   await queue.add("holder-analysis", { ...data, includeBundle: false }, { ...options, jobId: `holders-${data.mint}`, repeat: { every: 900_000 } });
   await scheduleShadowScan();
   return initial;
+}
+
+export async function scheduleLiveSafetyJobs() {
+  const queue = analysisQueue(), options = { removeOnComplete: 50, removeOnFail: 200 };
+  await queue.add("live-recovery", {}, { ...options, jobId: "live-recovery", repeat: { every: 30_000 } });
+  await queue.add("live-reconcile", {}, { ...options, jobId: "live-reconcile", repeat: { every: 300_000 } });
+}
+
+// Deduplicated per position within a 15s window so the 5s price loop cannot pile up quote requests.
+export async function requestExitCheck(mode: "shadow" | "live", positionId: string) {
+  return analysisQueue().add("exit-check", { mode, positionId }, { jobId: `exit-check-${positionId}-${Math.floor(Date.now() / 15_000)}`, removeOnComplete: 100, removeOnFail: 200 });
 }
 
 export async function scheduleShadowScan() {

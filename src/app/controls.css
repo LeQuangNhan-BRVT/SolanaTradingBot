@@ -1,1 +1,7 @@
 .resume-button{border-radius:6px;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;height:36px;color:var(--green);border:1px solid #24533d;background:#10291e;padding:0 12px}.entry-control{position:relative}.entry-control button:disabled{opacity:.55;cursor:wait}.entry-control>span{position:absolute;right:0;top:40px;color:var(--red);font-size:9px;white-space:nowrap}
+.halt-button{border-radius:6px;display:inline-flex;align-items:center;gap:7px;cursor:pointer;height:36px;padding:0 12px;border:1px solid #5a2526;background:#1d1011;color:var(--red);font-weight:700}
+.halt-button:hover{background:#2a1314}
+.halt-button.active{border-color:#2f5a45;background:#122119;color:var(--green)}
+.entry-control{display:flex;gap:8px;align-items:center}
+.mode-pill.halted{color:var(--red);border-color:#5a2526;background:#1d1011}
+.mode-pill.paused{color:var(--amber)}

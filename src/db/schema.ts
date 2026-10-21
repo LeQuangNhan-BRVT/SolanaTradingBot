@@ -44,7 +44,9 @@ export const signals = pgTable("signals", {
 }, (table) => [uniqueIndex("signals_idempotency_unique").on(table.idempotencyKey), index("signals_token_created_idx").on(table.tokenId, table.createdAt)]);
 
 export const orders = pgTable("orders", {
-  id: uuid("id").defaultRandom().primaryKey(), signalId: uuid("signal_id").references(() => signals.id), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull().default("paper"), side: orderSide("side").notNull(), status: orderStatus("status").notNull().default("created"), idempotencyKey: text("idempotency_key").notNull(), requestedAmountRaw: numeric("requested_amount_raw", { precision: 78, scale: 0 }).notNull(), quoteRaw: jsonb("quote_raw").$type<Record<string, unknown>>(), signature: text("signature"), error: text("error"), ...timestamps,
+  id: uuid("id").defaultRandom().primaryKey(), signalId: uuid("signal_id").references(() => signals.id), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull().default("paper"), side: orderSide("side").notNull(), status: orderStatus("status").notNull().default("created"), idempotencyKey: text("idempotency_key").notNull(), requestedAmountRaw: numeric("requested_amount_raw", { precision: 78, scale: 0 }).notNull(), quoteRaw: jsonb("quote_raw").$type<Record<string, unknown>>(), signature: text("signature"), error: text("error"),
+  // Live recovery: the signing wallet and blockhash expiry are persisted before a transaction is sent.
+  wallet: text("wallet"), lastValidBlockHeight: bigint("last_valid_block_height", { mode: "bigint" }), sentAt: timestamp("sent_at", { withTimezone: true }), ...timestamps,
 }, (table) => [uniqueIndex("orders_idempotency_unique").on(table.idempotencyKey), uniqueIndex("orders_signature_unique").on(table.signature), index("orders_status_created_idx").on(table.status, table.createdAt)]);
 
 export const fills = pgTable("fills", {

@@ -64,6 +64,13 @@
       "when": 1792592101146,
       "tag": "0008_third_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792595480090,
+      "tag": "0009_friendly_lord_hawal",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
-import { ANALYSIS_QUEUE, type DeepAnalysisJob } from "./client";
+import { ANALYSIS_QUEUE, requestExitCheck, scheduleLiveSafetyJobs, withRedisLock, type DeepAnalysisJob } from "./client";
 import { inspectMarket } from "../lib/market";
 import { getCandidateDetail, getWatchAlertConfig, isTokenArchived, refreshCandidateMarket, saveBundleAssessment, saveFinalRiskAssessment, saveHolderGraph } from "../db/repository";
 import { evaluateWatchAlerts } from "../lib/watchlist";
@@ -9,7 +9,9 @@ import { inspectHolderGraph } from "../lib/graph";
 import { inspectBundle } from "../lib/bundle";
 import { assessCandidate } from "../lib/risk-engine";
 import type { Candidate } from "../lib/types";
-import { executeShadowScan } from "../lib/shadow";
+import { executeExitCheck, executeShadowScan } from "../lib/shadow";
+import { reconcileLiveWallet, recoverLiveOrders } from "../lib/live-recovery";
+import { scanPricesForExits } from "../lib/price-monitor";
 import { sendAlertOnce } from "../lib/alerts";
 
 config({ path: ".env.local" });
@@ -19,6 +21,9 @@ void heartbeat(); const heartbeatTimer = setInterval(() => void heartbeat(), 15_
 
 const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
   if (job.name === "shadow-scan") return executeShadowScan();
+  if (job.name === "live-recovery") return (await withRedisLock("live-recovery", 120, () => recoverLiveOrders())) ?? { skipped: true, reason: "recovery already running" };
+  if (job.name === "live-reconcile") return reconcileLiveWallet();
+  if (job.name === "exit-check") return executeExitCheck(job.data.mode, job.data.positionId);
   if (typeof job.data?.mint !== "string") throw new Error("Unsupported analysis job.");
   if (await isTokenArchived(job.data.mint)) return { mint: job.data.mint, skipped: true, reason: "archived" };
   if (job.name === "market-refresh") {
@@ -55,7 +60,20 @@ const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
   return { mint: data.mint, snapshotId: snapshot.snapshotId, bundleCoverage, status: candidate.status, analyzedAt: new Date().toISOString() };
 }, { connection, concurrency: 2 });
 
-worker.on("completed", (job) => console.log("Analysis completed", job.name, job.id));
+void scheduleLiveSafetyJobs().catch((error) => console.error("Unable to schedule live safety jobs", error));
+
+// Fast price loop: polls Jupiter every 5s and queues an exact exit check for positions near a threshold.
+let priceScanRunning = false;
+const priceTimer = setInterval(() => {
+  if (priceScanRunning) return;
+  priceScanRunning = true;
+  scanPricesForExits(({ mode, positionId }) => requestExitCheck(mode, positionId).then(() => undefined))
+    .catch((error) => void sendAlertOnce("price-loop-error", 15 * 60_000, { type: "worker.price_loop.error", severity: "warning", title: "Price loop error", message: error instanceof Error ? error.message : String(error) }))
+    .finally(() => { priceScanRunning = false; });
+}, Number(process.env.PRICE_LOOP_INTERVAL_MS ?? 5_000));
+
+const quietJobs = new Set(["live-recovery", "live-reconcile", "exit-check"]);
+worker.on("completed", (job) => { if (!quietJobs.has(job.name)) console.log("Analysis completed", job.name, job.id); });
 worker.on("failed", (job, error) => {console.error("Analysis failed", job?.name, job?.id, error.message);void sendAlertOnce(`job-failed:${job?.name}:${job?.id}`,60*60_000,{type:"worker.job.failed",severity:"critical",title:"BullMQ job failed",message:`${job?.name??"unknown"}: ${error.message}`,data:{jobId:job?.id??null,jobName:job?.name??null,attemptsMade:job?.attemptsMade??null}});});
-async function shutdown() { clearInterval(heartbeatTimer); await worker.close(); await connection.del("aegis:worker:heartbeat"); await connection.quit(); process.exit(0); }
+async function shutdown() { clearInterval(heartbeatTimer); clearInterval(priceTimer); await worker.close(); await connection.del("aegis:worker:heartbeat"); await connection.quit(); process.exit(0); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

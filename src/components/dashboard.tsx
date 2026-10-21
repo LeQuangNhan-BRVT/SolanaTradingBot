@@ -8,7 +8,7 @@ const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD
 const cash = (value: number | null) => value === null ? "Chưa rõ" : money.format(value);
 const pct = (value: number | null) => value === null ? "—" : `${value}%`;
 
-export function Dashboard({ candidates, databaseConnected, entriesPaused, archived = false, activeTag = null }: { candidates: Candidate[]; databaseConnected: boolean; entriesPaused: boolean; archived?: boolean; activeTag?: string | null }) {
+export function Dashboard({ candidates, databaseConnected, entriesPaused, haltAll = false, archived = false, activeTag = null }: { candidates: Candidate[]; databaseConnected: boolean; entriesPaused: boolean; haltAll?: boolean; archived?: boolean; activeTag?: string | null }) {
   const eligible = candidates.filter((item) => item.status === "eligible").length;
   const autoTrade = candidates.filter((item) => item.watch?.autoTrade).length;
   const tags = [...new Set(candidates.flatMap((item) => item.watch?.tags ?? []))].sort();
@@ -17,13 +17,13 @@ export function Dashboard({ candidates, databaseConnected, entriesPaused, archiv
   return <main className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">A</div><div><strong>AEGIS</strong><span>SOLANA TERMINAL</span></div></div>
-      <nav><a className="active" href="#"><LayoutDashboard size={18}/> Tổng quan</a><a href="#watchlist"><Crosshair size={18}/> Watchlist <b>{candidates.length}</b></a><a href="/performance"><Activity size={18}/> Performance</a><a href="/positions"><Wallet size={18}/> Vị thế</a><a href="/wallets"><Eye size={18}/> Ví theo dõi</a><a href="#"><Shield size={18}/> Risk engine</a></nav>
+      <nav><a className="active" href="#"><LayoutDashboard size={18}/> Tổng quan</a><a href="#watchlist"><Crosshair size={18}/> Watchlist <b>{candidates.length}</b></a><a href="/performance"><Activity size={18}/> Performance</a><a href="/positions"><Wallet size={18}/> Vị thế</a><a href="/wallets"><Eye size={18}/> Ví theo dõi</a><a href="/live-safety"><Shield size={18}/> Live safety</a></nav>
       <div className="sidebar-bottom"><a href="/settings"><Settings size={18}/> Cài đặt</a><a href="/health"><HeartPulse size={18}/> System health</a><div className="system-status"><i/><div><strong>{databaseConnected ? "Database đã kết nối" : "Database offline"}</strong><span>Paper mode · Live trading đã khóa</span></div></div></div>
     </aside>
     <section className="workspace">
-      <header className="topbar"><div><span className="eyebrow">SYSTEM STATUS</span><strong>{databaseConnected ? "PostgreSQL online" : "PostgreSQL chưa cấu hình"}</strong></div><span className="mode-pill">PAPER MODE</span></header>
+      <header className="topbar"><div><span className="eyebrow">SYSTEM STATUS</span><strong>{databaseConnected ? "PostgreSQL online" : "PostgreSQL chưa cấu hình"}</strong></div><div className="top-actions">{haltAll ? <span className="mode-pill halted">TRADING HALTED</span> : entriesPaused ? <span className="mode-pill paused">ENTRIES PAUSED</span> : null}<span className="mode-pill">PAPER MODE</span></div></header>
       <div className="content">
-        <div className="page-title"><div><span className="eyebrow">CONTROL CENTER</span><h1>Tổng quan giao dịch</h1><p>Nhấn vào một token trong watchlist để xem holder, funding và bundle evidence.</p></div><div className="title-actions"><EntryControls initialPaused={entriesPaused}/><AddCaForm/></div></div>
+        <div className="page-title"><div><span className="eyebrow">CONTROL CENTER</span><h1>Tổng quan giao dịch</h1><p>Nhấn vào một token trong watchlist để xem holder, funding và bundle evidence.</p></div><div className="title-actions"><EntryControls initialPaused={entriesPaused} initialHalted={haltAll}/><AddCaForm/></div></div>
         <section className="metric-grid">
           <article><div className="metric-icon green"><CircleDollarSign size={19}/></div><span>Chế độ</span><strong>Paper</strong><small>Không dùng tiền thật</small></article>
           <article><div className="metric-icon blue"><Activity size={19}/></div><span>Watchlist</span><strong>{candidates.length} tokens</strong><small>Dữ liệu PostgreSQL</small></article>
