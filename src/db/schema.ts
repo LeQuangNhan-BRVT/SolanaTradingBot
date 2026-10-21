@@ -6,6 +6,8 @@ export const orderSide = pgEnum("order_side", ["buy", "sell"]);
 export const orderStatus = pgEnum("order_status", ["created", "quoted", "simulated", "submitted", "confirmed", "failed", "cancelled"]);
 export const positionStatus = pgEnum("position_status", ["open", "closing", "closed"]);
 export const tradingMode = pgEnum("trading_mode", ["paper", "shadow", "live"]);
+export const triggerType = pgEnum("trigger_type", ["limit_buy", "take_profit", "stop_loss", "trailing_stop"]);
+export const triggerStatus = pgEnum("trigger_status", ["active", "triggered", "filled", "cancelled", "expired", "failed"]);
 
 export const runtimeSettings = pgTable("runtime_settings", { key: text("key").primaryKey(), value: jsonb("value").$type<Record<string, unknown>>().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull() });
 
@@ -54,12 +56,23 @@ export const fills = pgTable("fills", {
 }, (table) => [uniqueIndex("fills_signature_order_unique").on(table.signature, table.orderId), index("fills_order_idx").on(table.orderId)]);
 
 export const positions = pgTable("positions", {
-  id: uuid("id").defaultRandom().primaryKey(), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull(), status: positionStatus("status").notNull().default("open"), quantityRaw: numeric("quantity_raw", { precision: 78, scale: 0 }).notNull(), costLamports: numeric("cost_lamports", { precision: 30, scale: 0 }).notNull(), realizedPnlLamports: numeric("realized_pnl_lamports", { precision: 30, scale: 0 }).notNull().default("0"), openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(), closedAt: timestamp("closed_at", { withTimezone: true }), ...timestamps,
+  id: uuid("id").defaultRandom().primaryKey(), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull(), status: positionStatus("status").notNull().default("open"), quantityRaw: numeric("quantity_raw", { precision: 78, scale: 0 }).notNull(), costLamports: numeric("cost_lamports", { precision: 30, scale: 0 }).notNull(), realizedPnlLamports: numeric("realized_pnl_lamports", { precision: 30, scale: 0 }).notNull().default("0"),
+  // "manual" positions come from trigger orders and are exited only by the user's own triggers, never by automated exit rules.
+  origin: text("origin").notNull().default("auto"), openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(), closedAt: timestamp("closed_at", { withTimezone: true }), ...timestamps,
 }, (table) => [index("positions_token_status_idx").on(table.tokenId, table.status), index("positions_mode_status_idx").on(table.mode, table.status)]);
 
 export const positionMarks = pgTable("position_marks", {
   id: uuid("id").defaultRandom().primaryKey(), positionId: uuid("position_id").notNull().references(() => positions.id), valueLamports: numeric("value_lamports", { precision: 30, scale: 0 }).notNull(), unrealizedPnlLamports: numeric("unrealized_pnl_lamports", { precision: 30, scale: 0 }).notNull(), pnlBps: integer("pnl_bps").notNull(), quoteRaw: jsonb("quote_raw").$type<Record<string, unknown>>().notNull(), markedAt: timestamp("marked_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [index("position_marks_position_time_idx").on(table.positionId, table.markedAt)]);
+
+export const triggerOrders = pgTable("trigger_orders", {
+  id: uuid("id").defaultRandom().primaryKey(), tokenId: uuid("token_id").notNull().references(() => tokens.id), positionId: uuid("position_id").references(() => positions.id), mode: tradingMode("mode").notNull().default("shadow"),
+  type: triggerType("type").notNull(), status: triggerStatus("status").notNull().default("active"),
+  triggerMcapUsd: numeric("trigger_mcap_usd", { precision: 30, scale: 2 }), trailingBps: integer("trailing_bps"), peakMcapUsd: numeric("peak_mcap_usd", { precision: 30, scale: 2 }),
+  buyLamports: numeric("buy_lamports", { precision: 30, scale: 0 }), sellPctBps: integer("sell_pct_bps"), maxSlippageBps: integer("max_slippage_bps").notNull().default(300),
+  ocoGroup: uuid("oco_group"), expiresAt: timestamp("expires_at", { withTimezone: true }), lastMcapUsd: numeric("last_mcap_usd", { precision: 30, scale: 2 }), lastError: text("last_error"),
+  resultOrderId: uuid("result_order_id").references(() => orders.id), triggeredAt: timestamp("triggered_at", { withTimezone: true }), filledAt: timestamp("filled_at", { withTimezone: true }), ...timestamps,
+}, (table) => [index("trigger_orders_status_idx").on(table.status), index("trigger_orders_token_idx").on(table.tokenId), index("trigger_orders_oco_idx").on(table.ocoGroup)]);
 
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(), eventType: text("event_type").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), payload: jsonb("payload").$type<Record<string, unknown>>().notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

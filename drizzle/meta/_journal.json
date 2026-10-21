@@ -71,6 +71,13 @@
       "when": 1792595480090,
       "tag": "0009_friendly_lord_hawal",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792599824398,
+      "tag": "0010_nifty_pandemic",
+      "breakpoints": true
     }
   ]
 }

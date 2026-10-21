@@ -65,6 +65,10 @@ export async function requestExitCheck(mode: "shadow" | "live", positionId: stri
   return analysisQueue().add("exit-check", { mode, positionId }, { jobId: `exit-check-${positionId}-${Math.floor(Date.now() / 15_000)}`, removeOnComplete: 100, removeOnFail: 200 });
 }
 
+export async function requestTriggerExecute(triggerId: string) {
+  return analysisQueue().add("trigger-execute", { triggerId }, { jobId: `trigger-${triggerId}-${Math.floor(Date.now() / 15_000)}`, removeOnComplete: 100, removeOnFail: 200 });
+}
+
 export async function scheduleShadowScan() {
   const queue = analysisQueue(); const options = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 10_000 } };
   await queue.add("shadow-scan", {}, { ...options, jobId: `shadow-now-${Math.floor(Date.now() / 60_000)}` });

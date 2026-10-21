@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDatabase, hasDatabase } from "./client";
-import { auditLogs, bundleAssessments, fills, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, walletFundingEdges, wallets } from "./schema";
+import { auditLogs, bundleAssessments, fills, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, triggerOrders, walletFundingEdges, wallets } from "./schema";
 import { normalizeTags, type WatchAlertConfig, type WatchlistPatch } from "@/lib/watchlist";
+import { costPortion, TriggerRejectedError } from "@/lib/triggers";
 import type { Candidate, MintInspection, RiskCheck } from "@/lib/types";
 import type { MarketInspection } from "@/lib/market";
 import type { MigrationInspection } from "@/lib/migration";
@@ -259,12 +260,12 @@ export async function getLivePortfolioState(mint: string): Promise<PortfolioStat
 
 export async function listOpenShadowPositions() {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: positions.id, mint: tokens.mint, tokenStatus: tokens.status, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "shadow"), eq(positions.status, "open")));
+  return getDatabase().select({ id: positions.id, mint: tokens.mint, tokenStatus: tokens.status, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "shadow"), eq(positions.status, "open"), eq(positions.origin, "auto")));
 }
 
 export async function listOpenLivePositions() {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: positions.id, mint: tokens.mint, tokenStatus: tokens.status, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), eq(positions.status, "open")));
+  return getDatabase().select({ id: positions.id, mint: tokens.mint, tokenStatus: tokens.status, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), eq(positions.status, "open"), eq(positions.origin, "auto")));
 }
 
 export async function savePositionMark(positionId: string, quote: JupiterQuote, pnlBps: number) {
@@ -344,13 +345,13 @@ export async function listRecentLiveOrders(limit = 30) {
 
 export async function listOpenPositionsForPricing() {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: positions.id, mode: positions.mode, mint: tokens.mint, decimals: tokens.decimals, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(inArray(positions.mode, ["shadow", "live"]), eq(positions.status, "open")));
+  return getDatabase().select({ id: positions.id, mode: positions.mode, mint: tokens.mint, decimals: tokens.decimals, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(inArray(positions.mode, ["shadow", "live"]), eq(positions.status, "open"), eq(positions.origin, "auto")));
 }
 
 export async function saveShadowExit(positionId: string, mint: string, quote: JupiterQuote, reason: string, pnlBps: number) {
   if (!hasDatabase()) return null;
   return getDatabase().transaction(async (tx) => {
-    const [position] = await tx.select().from(positions).where(and(eq(positions.id, positionId), eq(positions.mode, "shadow"), eq(positions.status, "open"))).limit(1);
+    const [position] = await tx.select().from(positions).where(and(eq(positions.id, positionId), eq(positions.mode, "shadow"), eq(positions.status, "open"))).for("update");
     if (!position) return { duplicate: true as const, orderId: null };
     const idempotencyKey = `shadow-exit:${position.id}`;
     const [order] = await tx.insert(orders).values({ tokenId: position.tokenId, mode: "shadow", side: "sell", status: "simulated", idempotencyKey, requestedAmountRaw: position.quantityRaw, quoteRaw: { ...quote, exitReason: reason, pnlBps } }).onConflictDoNothing().returning({ id: orders.id });
@@ -365,7 +366,7 @@ export async function saveShadowExit(positionId: string, mint: string, quote: Ju
 export async function listShadowPositions() {
   if (!hasDatabase()) return [];
   const db = getDatabase();
-  const rows = await db.select({ id: positions.id, mint: tokens.mint, symbol: tokens.symbol, name: tokens.name, tokenStatus: tokens.status, status: positions.status, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, realizedPnlLamports: positions.realizedPnlLamports, openedAt: positions.openedAt, closedAt: positions.closedAt, updatedAt: positions.updatedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(eq(positions.mode, "shadow")).orderBy(desc(positions.openedAt)).limit(200);
+  const rows = await db.select({ id: positions.id, mint: tokens.mint, symbol: tokens.symbol, name: tokens.name, tokenStatus: tokens.status, status: positions.status, origin: positions.origin, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, realizedPnlLamports: positions.realizedPnlLamports, openedAt: positions.openedAt, closedAt: positions.closedAt, updatedAt: positions.updatedAt }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(eq(positions.mode, "shadow")).orderBy(desc(positions.openedAt)).limit(200);
   return Promise.all(rows.map(async (row) => {
     const [mark] = await db.select({ valueLamports: positionMarks.valueLamports, unrealizedPnlLamports: positionMarks.unrealizedPnlLamports, pnlBps: positionMarks.pnlBps, markedAt: positionMarks.markedAt }).from(positionMarks).where(eq(positionMarks.positionId, row.id)).orderBy(desc(positionMarks.markedAt)).limit(1);
     if (row.status !== "closed") return { ...row, exitReason: null, exitPnlBps: null, mark: mark ?? null };
@@ -436,4 +437,123 @@ export async function saveMintAssessment(mint: MintInspection, candidate: Candid
     await tx.insert(auditLogs).values({ eventType: "mint.assessed", entityType: "token", entityId: token.id, payload: { mint: mint.mint, assessmentId: assessment.id, status: candidate.status, score: candidate.riskScore, marketEnriched: Boolean(market), marketSource: market ? "dexscreener" : null } });
     return { tokenId: token.id, assessmentId: assessment.id };
   });
+}
+
+// ---------- Trigger orders (shadow) ----------
+export type NewTriggerOrder = Omit<typeof triggerOrders.$inferInsert, "id" | "status" | "createdAt" | "updatedAt">;
+
+export async function getTriggerContext(mint: string) {
+  if (!hasDatabase()) return null;
+  const db = getDatabase();
+  const [token] = await db.select().from(tokens).where(eq(tokens.mint, mint)).limit(1);
+  if (!token) return null;
+  const [pool] = await db.select({ priceUsd: pools.priceUsd }).from(pools).where(eq(pools.tokenId, token.id)).orderBy(desc(pools.liquidityUsd)).limit(1);
+  const [position] = await db.select({ id: positions.id, origin: positions.origin, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).where(and(eq(positions.tokenId, token.id), eq(positions.mode, "shadow"), eq(positions.status, "open"))).limit(1);
+  return { token, priceUsd: pool?.priceUsd ?? null, position: position ?? null };
+}
+
+export async function createTriggerOrders(rows: NewTriggerOrder[]) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  return getDatabase().transaction(async (tx) => {
+    const created = await tx.insert(triggerOrders).values(rows).returning();
+    for (const row of created) await tx.insert(auditLogs).values({ eventType: "trigger.created", entityType: "trigger_order", entityId: row.id, payload: { type: row.type, tokenId: row.tokenId, positionId: row.positionId, triggerMcapUsd: row.triggerMcapUsd, trailingBps: row.trailingBps, buyLamports: row.buyLamports, sellPctBps: row.sellPctBps, ocoGroup: row.ocoGroup } });
+    return created;
+  });
+}
+
+export async function cancelTriggerOrder(id: string, reason = "Cancelled by user") {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().update(triggerOrders).set({ status: "cancelled", lastError: reason, updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), eq(triggerOrders.status, "active"))).returning({ id: triggerOrders.id });
+  return row ?? null;
+}
+
+export async function listTriggerOrders(options: { mint?: string; limit?: number } = {}) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, status: triggerOrders.status, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, buyLamports: triggerOrders.buyLamports, sellPctBps: triggerOrders.sellPctBps, maxSlippageBps: triggerOrders.maxSlippageBps, ocoGroup: triggerOrders.ocoGroup, expiresAt: triggerOrders.expiresAt, lastMcapUsd: triggerOrders.lastMcapUsd, lastError: triggerOrders.lastError, positionId: triggerOrders.positionId, createdAt: triggerOrders.createdAt, filledAt: triggerOrders.filledAt, mint: tokens.mint, symbol: tokens.symbol }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(options.mint ? eq(tokens.mint, options.mint) : undefined).orderBy(desc(triggerOrders.createdAt)).limit(options.limit ?? 200);
+}
+
+// Housekeeping before each evaluation: expire old orders and cancel sell orders whose position is gone.
+export async function sweepTriggerOrders() {
+  if (!hasDatabase()) return { expired: 0, cancelled: 0 };
+  const db = getDatabase();
+  const expired = await db.update(triggerOrders).set({ status: "expired", updatedAt: new Date() }).where(and(eq(triggerOrders.status, "active"), sql`${triggerOrders.expiresAt} < now()`)).returning({ id: triggerOrders.id });
+  const cancelled = await db.update(triggerOrders).set({ status: "cancelled", lastError: "Position closed", updatedAt: new Date() }).where(and(eq(triggerOrders.status, "active"), isNotNull(triggerOrders.positionId), sql`not exists (select 1 from ${positions} where ${positions.id} = ${triggerOrders.positionId} and ${positions.status} = 'open')`)).returning({ id: triggerOrders.id });
+  return { expired: expired.length, cancelled: cancelled.length };
+}
+
+export async function listActiveTriggersForPricing() {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, mint: tokens.mint, supplyRaw: tokens.supplyRaw, decimals: tokens.decimals }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(and(eq(triggerOrders.status, "active"), eq(triggerOrders.mode, "shadow")));
+}
+
+export async function recordTriggerObservation(id: string, mcapUsd: number, peakMcapUsd: number | null) {
+  if (!hasDatabase()) return;
+  await getDatabase().update(triggerOrders).set({ lastMcapUsd: mcapUsd.toFixed(2), ...(peakMcapUsd === null ? {} : { peakMcapUsd: peakMcapUsd.toFixed(2) }), updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), eq(triggerOrders.status, "active")));
+}
+
+// active -> triggered is the single-execution guard; only the caller that wins it may fill the order.
+export async function claimTriggerOrder(id: string) {
+  if (!hasDatabase()) return null;
+  const db = getDatabase();
+  const [order] = await db.update(triggerOrders).set({ status: "triggered", triggeredAt: new Date(), updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), eq(triggerOrders.status, "active"))).returning();
+  if (!order) return null;
+  const [token] = await db.select().from(tokens).where(eq(tokens.id, order.tokenId)).limit(1);
+  return { order, token };
+}
+
+export async function releaseTriggerOrder(id: string, error: string, status: "active" | "failed" | "cancelled" = "active") {
+  if (!hasDatabase()) return;
+  await getDatabase().update(triggerOrders).set({ status, lastError: error.slice(0, 500), updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), eq(triggerOrders.status, "triggered")));
+}
+
+async function cancelSiblings(tx: Parameters<Parameters<ReturnType<typeof getDatabase>["transaction"]>[0]>[0], order: typeof triggerOrders.$inferSelect, positionClosed: boolean) {
+  if (order.ocoGroup) await tx.update(triggerOrders).set({ status: "cancelled", lastError: "OCO sibling filled", updatedAt: new Date() }).where(and(eq(triggerOrders.ocoGroup, order.ocoGroup), eq(triggerOrders.status, "active")));
+  if (positionClosed && order.positionId) await tx.update(triggerOrders).set({ status: "cancelled", lastError: "Position closed", updatedAt: new Date() }).where(and(eq(triggerOrders.positionId, order.positionId), eq(triggerOrders.status, "active")));
+}
+
+export async function fillTriggerBuy(triggerId: string, quote: JupiterQuote, impliedMcapUsd: number) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  return getDatabase().transaction(async (tx) => {
+    const [order] = await tx.update(triggerOrders).set({ status: "filled", filledAt: new Date(), lastError: null, updatedAt: new Date() }).where(and(eq(triggerOrders.id, triggerId), eq(triggerOrders.status, "triggered"), eq(triggerOrders.type, "limit_buy"))).returning();
+    if (!order) throw new Error("Trigger order is no longer claimed.");
+    const [existing] = await tx.select({ id: positions.id }).from(positions).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "shadow"), eq(positions.status, "open"))).limit(1);
+    if (existing) throw new TriggerRejectedError("Token đã có vị thế shadow đang mở.");
+    const [buy] = await tx.insert(orders).values({ tokenId: order.tokenId, mode: "shadow", side: "buy", status: "simulated", idempotencyKey: `trigger:${order.id}`, requestedAmountRaw: quote.inAmount, quoteRaw: { ...quote, triggerId: order.id, impliedMcapUsd } }).returning({ id: orders.id });
+    const [position] = await tx.insert(positions).values({ tokenId: order.tokenId, mode: "shadow", status: "open", origin: "manual", quantityRaw: quote.outAmount, costLamports: quote.inAmount }).returning({ id: positions.id });
+    await tx.update(triggerOrders).set({ resultOrderId: buy.id, positionId: position.id }).where(eq(triggerOrders.id, order.id));
+    await tx.insert(auditLogs).values({ eventType: "shadow.entry.simulated", entityType: "order", entityId: buy.id, payload: { positionId: position.id, triggerId: order.id, origin: "manual", inputLamports: quote.inAmount, outputAmountRaw: quote.outAmount, impliedMcapUsd, priceImpactPct: quote.priceImpactPct ?? null } });
+    return { orderId: buy.id, positionId: position.id };
+  });
+}
+
+export async function fillTriggerSell(triggerId: string, quote: JupiterQuote, soldRaw: bigint, impliedMcapUsd: number) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  return getDatabase().transaction(async (tx) => {
+    const [order] = await tx.update(triggerOrders).set({ status: "filled", filledAt: new Date(), lastError: null, updatedAt: new Date() }).where(and(eq(triggerOrders.id, triggerId), eq(triggerOrders.status, "triggered"))).returning();
+    if (!order || !order.positionId) throw new Error("Trigger order is no longer claimed.");
+    // Row lock serializes against automated exits and other triggers on the same position.
+    const [position] = await tx.select().from(positions).where(and(eq(positions.id, order.positionId), eq(positions.status, "open"))).for("update");
+    if (!position) throw new TriggerRejectedError("Vị thế không còn mở.");
+    if (soldRaw <= 0n || soldRaw > BigInt(position.quantityRaw)) throw new TriggerRejectedError("Khối lượng bán không hợp lệ.");
+    const releasedCost = costPortion(position.costLamports, position.quantityRaw, soldRaw), proceeds = BigInt(quote.outAmount), pnl = proceeds - releasedCost;
+    const remaining = BigInt(position.quantityRaw) - soldRaw, closed = remaining === 0n, pnlBps = releasedCost === 0n ? 0 : Number(pnl * 10_000n / releasedCost);
+    const [sell] = await tx.insert(orders).values({ tokenId: position.tokenId, mode: "shadow", side: "sell", status: "simulated", idempotencyKey: `trigger:${order.id}`, requestedAmountRaw: soldRaw.toString(), quoteRaw: { ...quote, triggerId: order.id, impliedMcapUsd, exitReason: `trigger_${order.type}`, pnlBps } }).returning({ id: orders.id });
+    const realized = (BigInt(position.realizedPnlLamports) + pnl).toString();
+    await tx.update(positions).set({ quantityRaw: remaining.toString(), costLamports: (BigInt(position.costLamports) - releasedCost).toString(), realizedPnlLamports: realized, ...(closed ? { status: "closed" as const, closedAt: new Date() } : {}), updatedAt: new Date() }).where(eq(positions.id, position.id));
+    await tx.update(triggerOrders).set({ resultOrderId: sell.id }).where(eq(triggerOrders.id, order.id));
+    await cancelSiblings(tx, order, closed);
+    await tx.insert(auditLogs).values({ eventType: closed ? "shadow.exit.simulated" : "shadow.partial_exit.simulated", entityType: "order", entityId: sell.id, payload: { positionId: position.id, triggerId: order.id, reason: `trigger_${order.type}`, pnlBps, soldRaw: soldRaw.toString(), remainingRaw: remaining.toString(), proceedsLamports: quote.outAmount, releasedCostLamports: releasedCost.toString(), realizedPnlLamports: realized, impliedMcapUsd } });
+    return { orderId: sell.id, positionId: position.id, closed, pnlBps, realizedPnlLamports: realized };
+  });
+}
+
+export async function getShadowPositionById(id: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().select().from(positions).where(and(eq(positions.id, id), eq(positions.mode, "shadow"))).limit(1);
+  return row ?? null;
+}
+
+export async function refreshTokenSupply(mint: string, supplyRaw: string) {
+  if (!hasDatabase()) return;
+  await getDatabase().update(tokens).set({ supplyRaw }).where(eq(tokens.mint, mint));
 }

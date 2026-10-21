@@ -21,6 +21,25 @@ Candidates are added manually by submitting a mint address (CA) on the dashboard
 - **Auto-trade is opt-in per token.** The worker only enters positions for tokens that are `eligible` *and* have auto-trade enabled. Existing tokens default to auto-trade off after migration `0008`; exits for already-open positions are unaffected.
 - **Price alerts** per token: price above/below a USD threshold and absolute 1h change. They are evaluated on every market refresh (5 minutes) and delivered through the configured webhook/Telegram destinations, at most once per hour per alert type.
 
+## Trigger orders (shadow)
+
+Conditional orders priced in **market cap (USD)**, created from a token's detail page and listed at `/orders`. They are simulated: the engine only runs while the worker is in `TRADING_MODE=shadow` and never sends transactions.
+
+| Type | Fires when | Action |
+|---|---|---|
+| Limit buy | mcap ≤ target | Buy the configured SOL amount |
+| Take profit | mcap ≥ target | Sell N% of the position |
+| Stop loss | mcap ≤ target | Sell N% of the position |
+| Trailing stop | mcap falls the configured % from its peak since creation | Sell N% of the position |
+| TP + SL (OCO) | Either side fires | The filled side cancels the other |
+
+- Market cap = price × on-chain supply (`tokens.supply_raw`, refreshed on every market refresh so burns are reflected). Input accepts `750k`, `2.5M`, `1.2B`.
+- Detection uses the shared 5-second Jupiter price loop; each fired order is re-validated with an exact Jupiter quote. Limits fill only at their price or better (implied by the quote × SOL/USD). Stops fill at market but are refused when price impact exceeds the order's maximum, so a stop can stay unfilled in a thin market.
+- Orders that would fire immediately are rejected at creation. Orders can expire; sell orders are cancelled when their position closes.
+- Limit buys are allowed on tokens that have not passed the hard gates, with an explicit warning. Shadow open-position, exposure and daily-loss limits still apply.
+- Positions opened by a limit buy are `manual`: automated exits (risk exit, stop loss, take profit, time stop, fast exits) never touch them; only your own trigger orders do. Partial sells release cost basis proportionally and accumulate realized PnL.
+- One open shadow position per token.
+
 ## Watch-only wallets
 
 `/wallets` tracks public wallet addresses only; no private key is requested or stored. For each wallet the app shows:

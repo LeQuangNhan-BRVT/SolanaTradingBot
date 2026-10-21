@@ -1,4 +1,4 @@
-import { Activity, CircleDollarSign, Crosshair, Eye, HeartPulse, LayoutDashboard, Settings, Shield, Wallet } from "lucide-react";
+import { Activity, CircleDollarSign, Crosshair, Eye, ListOrdered, HeartPulse, LayoutDashboard, Settings, Shield, Wallet } from "lucide-react";
 import type { Candidate } from "@/lib/types";
 import { AddCaForm } from "./add-ca-form";
 import { TokenRow } from "./token-row";
@@ -17,7 +17,7 @@ export function Dashboard({ candidates, databaseConnected, entriesPaused, haltAl
   return <main className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">A</div><div><strong>AEGIS</strong><span>SOLANA TERMINAL</span></div></div>
-      <nav><a className="active" href="#"><LayoutDashboard size={18}/> Tổng quan</a><a href="#watchlist"><Crosshair size={18}/> Watchlist <b>{candidates.length}</b></a><a href="/performance"><Activity size={18}/> Performance</a><a href="/positions"><Wallet size={18}/> Vị thế</a><a href="/wallets"><Eye size={18}/> Ví theo dõi</a><a href="/live-safety"><Shield size={18}/> Live safety</a></nav>
+      <nav><a className="active" href="#"><LayoutDashboard size={18}/> Tổng quan</a><a href="#watchlist"><Crosshair size={18}/> Watchlist <b>{candidates.length}</b></a><a href="/performance"><Activity size={18}/> Performance</a><a href="/positions"><Wallet size={18}/> Vị thế</a><a href="/wallets"><Eye size={18}/> Ví theo dõi</a><a href="/orders"><ListOrdered size={18}/> Lệnh điều kiện</a><a href="/live-safety"><Shield size={18}/> Live safety</a></nav>
       <div className="sidebar-bottom"><a href="/settings"><Settings size={18}/> Cài đặt</a><a href="/health"><HeartPulse size={18}/> System health</a><div className="system-status"><i/><div><strong>{databaseConnected ? "Database đã kết nối" : "Database offline"}</strong><span>Paper mode · Live trading đã khóa</span></div></div></div>
     </aside>
     <section className="workspace">
