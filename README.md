@@ -14,6 +14,24 @@ Without `DATABASE_URL`, the dashboard continues with mock candidates and the CA 
 
 Candidates are added manually by submitting a mint address (CA) on the dashboard; there is no automatic discovery of new migrations yet.
 
+## Watchlist
+
+- **Pin, note and tag** tokens from the dashboard or the token detail page; filter the watchlist by tag.
+- **Archive** a token to stop its background market and holder refresh jobs. Tokens with an open position cannot be archived. Restoring an archived token re-submits its CA, which re-verifies it and reschedules its jobs.
+- **Auto-trade is opt-in per token.** The worker only enters positions for tokens that are `eligible` *and* have auto-trade enabled. Existing tokens default to auto-trade off after migration `0008`; exits for already-open positions are unaffected.
+- **Price alerts** per token: price above/below a USD threshold and absolute 1h change. They are evaluated on every market refresh (5 minutes) and delivered through the configured webhook/Telegram destinations, at most once per hour per alert type.
+
+## Watch-only wallets
+
+`/wallets` tracks public wallet addresses only; no private key is requested or stored. For each wallet the app shows:
+
+- SOL balance and SPL/Token-2022 holdings with estimated USD value (DexScreener prices).
+- Tokens traded in the most recent 40 transactions: amounts bought/sold and SOL spent/received. SOL figures include priority fees and token-account rent, and only cover the scanned window.
+- Recent activity classified as buy, sell, swap, receive or send, with Solscan links.
+- A one-click "+ Watchlist" for any held or traded token.
+
+Wallet data is read live from RPC on page load (Helius when `HELIUS_API_KEY` is set) and is not persisted.
+
 ## Analysis pipeline
 
 1. **CA submission** (`POST /api/candidates`) — reads mint/freeze authority, enriches market data, verifies the Pump.fun migration transaction on-chain and identifies the creator.

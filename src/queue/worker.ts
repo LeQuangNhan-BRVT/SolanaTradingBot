@@ -3,7 +3,8 @@ import { Worker } from "bullmq";
 import IORedis from "ioredis";
 import { ANALYSIS_QUEUE, type DeepAnalysisJob } from "./client";
 import { inspectMarket } from "../lib/market";
-import { getCandidateDetail, refreshCandidateMarket, saveBundleAssessment, saveFinalRiskAssessment, saveHolderGraph } from "../db/repository";
+import { getCandidateDetail, getWatchAlertConfig, isTokenArchived, refreshCandidateMarket, saveBundleAssessment, saveFinalRiskAssessment, saveHolderGraph } from "../db/repository";
+import { evaluateWatchAlerts } from "../lib/watchlist";
 import { inspectHolderGraph } from "../lib/graph";
 import { inspectBundle } from "../lib/bundle";
 import { assessCandidate } from "../lib/risk-engine";
@@ -19,11 +20,15 @@ void heartbeat(); const heartbeatTimer = setInterval(() => void heartbeat(), 15_
 const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
   if (job.name === "shadow-scan") return executeShadowScan();
   if (typeof job.data?.mint !== "string") throw new Error("Unsupported analysis job.");
+  if (await isTokenArchived(job.data.mint)) return { mint: job.data.mint, skipped: true, reason: "archived" };
   if (job.name === "market-refresh") {
     const market = await inspectMarket(job.data.mint);
     if (!market) throw new Error("Không tìm thấy pool market cho token.");
     await refreshCandidateMarket(job.data.mint, market);
-    return { mint: job.data.mint, refreshedAt: new Date().toISOString() };
+    const alertConfig = await getWatchAlertConfig(job.data.mint);
+    const alerts = alertConfig ? evaluateWatchAlerts(alertConfig, market) : [];
+    for (const alert of alerts) void sendAlertOnce(`watch:${job.data.mint}:${alert.kind}`, 60 * 60_000, { type: `watchlist.${alert.kind}`, severity: "info", title: `Watchlist ${alertConfig?.symbol ?? job.data.mint.slice(0, 6)}`, message: alert.message, data: { mint: job.data.mint, priceUsd: market.priceUsd, priceChange1h: market.priceChange1h } });
+    return { mint: job.data.mint, refreshedAt: new Date().toISOString(), alerts: alerts.map((item) => item.kind) };
   }
   if (job.name !== "holder-analysis" && job.name !== "holder-bundle-analysis") throw new Error("Unsupported analysis job.");
   const data = job.data as DeepAnalysisJob;

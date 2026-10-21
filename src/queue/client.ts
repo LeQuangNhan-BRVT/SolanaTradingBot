@@ -25,6 +25,16 @@ export async function scheduleMarketRefresh(mint: string) {
   return queue.add("market-refresh", { mint }, { ...options, jobId: `market-${mint}`, repeat: { every: 300_000 } });
 }
 
+// Repeat options must match the ones used when scheduling, otherwise BullMQ cannot find the repeatable job.
+export async function unscheduleTokenJobs(mint: string) {
+  const queue = analysisQueue();
+  const [market, holders] = await Promise.all([
+    queue.removeRepeatable("market-refresh", { every: 300_000 }, `market-${mint}`),
+    queue.removeRepeatable("holder-analysis", { every: 900_000 }, `holders-${mint}`),
+  ]);
+  return { market, holders };
+}
+
 export type DeepAnalysisJob = { mint: string; tokenProgram: string; mintAuthority: string | null; freezeAuthority: string | null; poolAddress: string | null; creator: { creator: string; user: string; feePayer: string; blockTime: string }; migration: { blockTime: string } | null; includeBundle: boolean };
 
 export async function scheduleDeepAnalysis(data: Omit<DeepAnalysisJob, "includeBundle">) {
