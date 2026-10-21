@@ -8,11 +8,16 @@ import { inspectHolderGraph } from "../lib/graph";
 import { inspectBundle } from "../lib/bundle";
 import { assessCandidate } from "../lib/risk-engine";
 import type { Candidate } from "../lib/types";
+import { executeShadowScan } from "../lib/shadow";
+import { sendAlertOnce } from "../lib/alerts";
 
 config({ path: ".env.local" });
 const connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: null });
+const heartbeat = async () => connection.set("aegis:worker:heartbeat", new Date().toISOString(), "EX", 45);
+void heartbeat(); const heartbeatTimer = setInterval(() => void heartbeat(), 15_000);
 
 const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
+  if (job.name === "shadow-scan") return executeShadowScan();
   if (typeof job.data?.mint !== "string") throw new Error("Unsupported analysis job.");
   if (job.name === "market-refresh") {
     const market = await inspectMarket(job.data.mint);
@@ -46,6 +51,6 @@ const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
 }, { connection, concurrency: 2 });
 
 worker.on("completed", (job) => console.log("Analysis completed", job.name, job.id));
-worker.on("failed", (job, error) => console.error("Analysis failed", job?.name, job?.id, error.message));
-async function shutdown() { await worker.close(); await connection.quit(); process.exit(0); }
+worker.on("failed", (job, error) => {console.error("Analysis failed", job?.name, job?.id, error.message);void sendAlertOnce(`job-failed:${job?.name}:${job?.id}`,60*60_000,{type:"worker.job.failed",severity:"critical",title:"BullMQ job failed",message:`${job?.name??"unknown"}: ${error.message}`,data:{jobId:job?.id??null,jobName:job?.name??null,attemptsMade:job?.attemptsMade??null}});});
+async function shutdown() { clearInterval(heartbeatTimer); await worker.close(); await connection.del("aegis:worker:heartbeat"); await connection.quit(); process.exit(0); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

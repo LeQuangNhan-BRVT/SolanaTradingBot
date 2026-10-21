@@ -8,9 +8,10 @@ import { inspectMarket } from "@/lib/market";
 import { verifyPumpMigration } from "@/lib/migration";
 import { scheduleDeepAnalysis, scheduleMarketRefresh } from "@/queue/client";
 import { inspectPumpCreator } from "@/lib/creator";
+import { enforceWriteRateLimit } from "@/lib/api-security";
 export const runtime = "nodejs";
 const requestSchema = z.object({ mint: z.string().trim().min(32).max(44) });
-export async function POST(request: Request) {
+export async function POST(request: Request) {const limited=await enforceWriteRateLimit(request,"candidate",10);if(limited)return limited;
   try {
     const input = requestSchema.parse(await request.json());
     const mint = await inspectMint(input.mint);

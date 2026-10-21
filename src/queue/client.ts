@@ -13,6 +13,11 @@ function redisConnection() {
 
 export function analysisQueue() { queue ??= new Queue(ANALYSIS_QUEUE, { connection: redisConnection() }); return queue; }
 
+export async function getQueueHealth() {
+  const redis = redisConnection(), counts = await analysisQueue().getJobCounts("waiting","active","completed","failed","delayed","paused"), heartbeat = await redis.get("aegis:worker:heartbeat"), heartbeatTtl = await redis.ttl("aegis:worker:heartbeat");
+  return { connected: (await redis.ping()) === "PONG", counts, heartbeat, heartbeatTtl, workerOnline: heartbeatTtl > 0 };
+}
+
 export async function scheduleMarketRefresh(mint: string) {
   const queue = analysisQueue();
   const options = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 5_000 } };
@@ -27,5 +32,12 @@ export async function scheduleDeepAnalysis(data: Omit<DeepAnalysisJob, "includeB
   const options = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 10_000 } };
   const initial = await queue.add("holder-bundle-analysis", { ...data, includeBundle: true }, { ...options, jobId: `deep-${data.mint}-${Date.now()}` });
   await queue.add("holder-analysis", { ...data, includeBundle: false }, { ...options, jobId: `holders-${data.mint}`, repeat: { every: 900_000 } });
+  await scheduleShadowScan();
   return initial;
+}
+
+export async function scheduleShadowScan() {
+  const queue = analysisQueue(); const options = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 10_000 } };
+  await queue.add("shadow-scan", {}, { ...options, jobId: `shadow-now-${Math.floor(Date.now() / 60_000)}` });
+  return queue.add("shadow-scan", {}, { ...options, jobId: "shadow-scan", repeat: { every: 60_000 } });
 }

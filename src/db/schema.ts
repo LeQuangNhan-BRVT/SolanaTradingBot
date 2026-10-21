@@ -7,6 +7,8 @@ export const orderStatus = pgEnum("order_status", ["created", "quoted", "simulat
 export const positionStatus = pgEnum("position_status", ["open", "closing", "closed"]);
 export const tradingMode = pgEnum("trading_mode", ["paper", "shadow", "live"]);
 
+export const runtimeSettings = pgTable("runtime_settings", { key: text("key").primaryKey(), value: jsonb("value").$type<Record<string, unknown>>().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull() });
+
 const timestamps = { createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull() };
 
 export const tokens = pgTable("tokens", {
@@ -49,6 +51,10 @@ export const fills = pgTable("fills", {
 export const positions = pgTable("positions", {
   id: uuid("id").defaultRandom().primaryKey(), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull(), status: positionStatus("status").notNull().default("open"), quantityRaw: numeric("quantity_raw", { precision: 78, scale: 0 }).notNull(), costLamports: numeric("cost_lamports", { precision: 30, scale: 0 }).notNull(), realizedPnlLamports: numeric("realized_pnl_lamports", { precision: 30, scale: 0 }).notNull().default("0"), openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(), closedAt: timestamp("closed_at", { withTimezone: true }), ...timestamps,
 }, (table) => [index("positions_token_status_idx").on(table.tokenId, table.status), index("positions_mode_status_idx").on(table.mode, table.status)]);
+
+export const positionMarks = pgTable("position_marks", {
+  id: uuid("id").defaultRandom().primaryKey(), positionId: uuid("position_id").notNull().references(() => positions.id), valueLamports: numeric("value_lamports", { precision: 30, scale: 0 }).notNull(), unrealizedPnlLamports: numeric("unrealized_pnl_lamports", { precision: 30, scale: 0 }).notNull(), pnlBps: integer("pnl_bps").notNull(), quoteRaw: jsonb("quote_raw").$type<Record<string, unknown>>().notNull(), markedAt: timestamp("marked_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("position_marks_position_time_idx").on(table.positionId, table.markedAt)]);
 
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(), eventType: text("event_type").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), payload: jsonb("payload").$type<Record<string, unknown>>().notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

@@ -1,0 +1,107 @@
+name: aegis-solana-prod
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aegis}
+      POSTGRES_USER: ${POSTGRES_USER:-aegis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server","--appendonly","yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+  migrate:
+    build: .
+    command: ["node","node_modules/drizzle-kit/bin.cjs","migrate"]
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aegis}
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+    networks: [backend]
+  web:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aegis}
+      REDIS_URL: redis://redis:6379
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env.production}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env.production}
+      APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3000}
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD","wget","-qO-","http://127.0.0.1:3000/api/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [backend, outbound]
+  worker:
+    build: .
+    command: ["node","node_modules/tsx/dist/cli.mjs","src/queue/worker.ts"]
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aegis}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD","node","scripts/worker-healthcheck.mjs"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+    networks: [backend, outbound]
+  backup:
+    image: postgres:17-alpine
+    profiles: [tools]
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    command: ["sh","-c","pg_dump -h postgres -U $${POSTGRES_USER:-aegis} -d $${POSTGRES_DB:-aegis} -Fc -f /backups/aegis-$$(date +%Y%m%d-%H%M%S).dump"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [backend]
+volumes:
+  postgres_data:
+  redis_data:
+networks:
+  backend:
+    internal: true
+  outbound:

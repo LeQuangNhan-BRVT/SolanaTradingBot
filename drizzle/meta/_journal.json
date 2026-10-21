@@ -36,6 +36,20 @@
       "when": 1784529843649,
       "tag": "0004_watery_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784787471725,
+      "tag": "0005_chemical_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784964086065,
+      "tag": "0006_serious_dorian_gray",
+      "breakpoints": true
     }
   ]
 }

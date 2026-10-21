@@ -1,0 +1,1 @@
+import { NextResponse } from "next/server";import { getPerformanceReport } from "@/lib/performance";export const runtime="nodejs";export async function GET(){return NextResponse.json(await getPerformanceReport());}

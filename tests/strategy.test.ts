@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { assessPortfolioRisk,assessShadowEntry } from "../src/lib/strategy";
+import type { Candidate } from "../src/lib/types";
+const candidate:Candidate={mint:"mint",symbol:"T",name:"Token",launchpad:"Pump.fun",migratedHours:6,riskScore:0,bundlePct:2,clusterPct:1,liquidityUsd:100_000,volume1hUsd:100_000,priceChange1h:15,status:"eligible"};const quote={inputMint:"SOL",outputMint:"mint",inAmount:"50000000",outAmount:"1000",priceImpactPct:"0.01"};
+test("strong signal is accepted",()=>{const result=assessShadowEntry(candidate,quote);assert.equal(result.accepted,true);assert.ok(result.score>=70);});
+test("high price impact is rejected even with high score",()=>{const result=assessShadowEntry(candidate,{...quote,priceImpactPct:"0.10"});assert.equal(result.accepted,false);assert.match(result.reasons.join(" "),/Price impact/);});
+test("missing momentum and weak turnover reject entry",()=>{const result=assessShadowEntry({...candidate,volume1hUsd:1_000,priceChange1h:null},quote);assert.equal(result.accepted,false);assert.match(result.reasons.join(" "),/Volume\/liquidity/);});
+test("portfolio accepts empty state",()=>{assert.equal(assessPortfolioRisk({openCount:0,exposureLamports:"0",dailyRealizedPnlLamports:"0",consecutiveLosses:0,lastClosedAt:null}).accepted,true);});
+test("portfolio limits fail closed",()=>{const result=assessPortfolioRisk({openCount:3,exposureLamports:"150000000",dailyRealizedPnlLamports:"-50000000",consecutiveLosses:3,lastClosedAt:new Date()});assert.equal(result.accepted,false);assert.ok(result.reasons.length>=5);});
