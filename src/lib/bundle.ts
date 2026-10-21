@@ -5,7 +5,8 @@ export type BundleAssessment={suspectedBundlePct:number;confidence:number;covere
 
 type Balance={mint?:string;owner?:string;accountIndex?:number;uiTokenAmount?:{amount?:string}};
 export async function inspectBundle(mint:string,graph:HolderGraph,from:Date,to:Date):Promise<BundleAssessment>{
- const key=process.env.HELIUS_API_KEY;if(!key)return{suspectedBundlePct:0,confidence:0,coveredTransactions:0,truncated:false,suspiciousWallets:[],evidence:[]};
+ // Fail-closed: missing history or funding data marks coverage incomplete so the bundle gate stays unknown.
+ const key=process.env.HELIUS_API_KEY;if(!key||!graph.fundingComplete)return{suspectedBundlePct:0,confidence:0,coveredTransactions:0,truncated:true,suspiciousWallets:[],evidence:[]};
  const records:Array<Record<string,unknown>>=[];let paginationToken:string|undefined;
  for(let page=0;page<10;page++){
   const options:Record<string,unknown>={transactionDetails:"full",encoding:"jsonParsed",maxSupportedTransactionVersion:0,sortOrder:"asc",limit:1000,filters:{blockTime:{gte:Math.floor(from.getTime()/1000),lte:Math.floor(to.getTime()/1000)},status:"succeeded"}};if(paginationToken)options.paginationToken=paginationToken;

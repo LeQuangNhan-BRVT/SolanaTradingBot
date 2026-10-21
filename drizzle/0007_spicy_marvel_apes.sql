@@ -1,0 +1,1 @@
+ALTER TABLE "holder_snapshots" ALTER COLUMN "creator_cluster_pct" DROP NOT NULL;
