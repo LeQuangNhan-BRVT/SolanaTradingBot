@@ -1,13 +1,14 @@
-import { confirmLiveEntry, confirmLiveExit, failLiveOrder, getLiveExpectedHoldings, listPendingLiveOrders, releaseOrphanClosingPositions, setRuntimeValue, updateTradingControls } from "@/db/repository";
+import { attachRecoveredSignature, confirmLiveEntry, confirmLiveExit, failLiveOrder, isSignatureRecorded, getLiveExpectedHoldings, listPendingLiveOrders, releaseOrphanClosingPositions, setRuntimeValue, updateTradingControls } from "@/db/repository";
 import { fetchLiveExecution, hasLiveKeypair, liveConnection, loadLiveKeypair, type LiveSide, type LiveSwapExecution } from "./live";
-import { decideRecovery, reconcileHoldings, type SignatureState } from "./live-safety";
-import { getWalletHoldings } from "./wallet-tracker";
+import { decideRecovery, matchManualSwap, reconcileHoldings, type SignatureState } from "./live-safety";
+import { getWalletActivity, getWalletHoldings, type WalletChange } from "./wallet-tracker";
 import { sendAlertOnce } from "./alerts";
 
 export type RecoveryChain = {
   getSignatureStatus(signature: string): Promise<SignatureState>;
   getBlockHeight(): Promise<number>;
   fetchExecution(signature: string, wallet: string, tokenMint: string, side: LiveSide): Promise<LiveSwapExecution | null>;
+  walletActivity(wallet: string): Promise<WalletChange[]>;
 };
 
 export function rpcRecoveryChain(): RecoveryChain {
@@ -16,6 +17,7 @@ export function rpcRecoveryChain(): RecoveryChain {
     async getSignatureStatus(signature) { const { value } = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true }); return value[0] ? { err: value[0].err, confirmationStatus: value[0].confirmationStatus ?? null } : null; },
     getBlockHeight: () => connection.getBlockHeight("confirmed"),
     fetchExecution: (signature, wallet, tokenMint, side) => fetchLiveExecution(connection, signature, wallet, tokenMint, side),
+    walletActivity: (wallet) => getWalletActivity(wallet, 25),
   };
 }
 
@@ -31,17 +33,26 @@ export async function recoverLiveOrders(chain: RecoveryChain = rpcRecoveryChain(
     try {
       // A reserved order may still be building its swap; give the live path ample time before declaring it abandoned.
       if (!order.signature && Date.now() - order.updatedAt.getTime() < 2 * minAgeMs) { results.push({ orderId: order.id, side, action: "wait" }); continue; }
-      const status = order.signature ? await chain.getSignatureStatus(order.signature) : null;
-      const decision = decideRecovery({ signature: order.signature, status, blockHeight, lastValidBlockHeight: order.lastValidBlockHeight });
+      let signature = order.signature;
+      // Browser-wallet orders: the wallet broadcasts before the app learns the signature, so look for the swap in the wallet's history.
+      if (!signature && order.origin === "manual" && order.wallet) {
+        const changes = await chain.walletActivity(order.wallet), recorded = new Set<string>();
+        for (const change of changes) if (await isSignatureRecorded(change.signature)) recorded.add(change.signature);
+        const match = matchManualSwap(changes, order.mint, side, order.createdAt, recorded);
+        if (match && await attachRecoveredSignature(order.id, match)) signature = match;
+        else if (order.lastValidBlockHeight === null || BigInt(blockHeight) <= order.lastValidBlockHeight) { results.push({ orderId: order.id, side, action: "wait", detail: "Manual order not found in wallet yet." }); continue; }
+      }
+      const status = signature ? await chain.getSignatureStatus(signature) : null;
+      const decision = decideRecovery({ signature, status, blockHeight, lastValidBlockHeight: order.lastValidBlockHeight });
       if (decision === "wait") { results.push({ orderId: order.id, side, action: "wait" }); continue; }
       if (decision === "fail") {
-        const reason = !order.signature ? "Never broadcast (no signature persisted)." : status?.err ? `Failed on-chain: ${JSON.stringify(status.err)}` : "Blockhash expired without landing.";
+        const reason = !signature && order.origin === "manual" ? "Wallet never broadcast a matching swap before the blockhash expired." : !signature ? "Never broadcast (no signature persisted)." : status?.err ? `Failed on-chain: ${JSON.stringify(status.err)}` : "Blockhash expired without landing.";
         await failLiveOrder(order.id, `Recovery: ${reason}`);
         results.push({ orderId: order.id, side, action: "failed", detail: reason });
         continue;
       }
       if (!order.wallet) throw new Error("Confirmed order has no wallet recorded.");
-      const execution = await chain.fetchExecution(order.signature!, order.wallet, order.mint, side);
+      const execution = await chain.fetchExecution(signature!, order.wallet, order.mint, side);
       if (!execution) { results.push({ orderId: order.id, side, action: "wait", detail: "Transaction details not yet available." }); continue; }
       const saved = side === "buy" ? await confirmLiveEntry(order.id, execution) : await confirmLiveExit(order.id, execution);
       results.push({ orderId: order.id, side, action: saved?.duplicate ? "already-confirmed" : "confirmed" });

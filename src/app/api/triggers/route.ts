@@ -18,13 +18,16 @@ export async function POST(request: Request) {
     const input = createTriggerSchema.parse(await request.json());
     const context = await getTriggerContext(input.mint);
     if (!context) return NextResponse.json({ error: "Token chưa có trong watchlist. Hãy thêm CA trước." }, { status: 404 });
-    const { token, priceUsd, position } = context;
+    const { token, priceUsd, position, walletPositions } = context;
     if (token.supplyRaw === null || token.decimals === null || priceUsd === null) return NextResponse.json({ error: "Chưa có giá hoặc supply để tính market cap; đợi lần làm mới market kế tiếp." }, { status: 422 });
     const currentMcap = mcapFromPrice(Number(priceUsd), token.supplyRaw, token.decimals);
     const errors = validateAgainstMarket(input, currentMcap);
     const warnings: string[] = [];
-    if (!triggersEnabled()) warnings.push("Engine chỉ chạy khi TRADING_MODE=shadow; lệnh sẽ chờ cho đến khi bật.");
 
+    // Sell orders attach to a shadow position (simulated fill) or a browser-wallet position (alert + one-click sell).
+    const target = input.positionId ? (position?.id === input.positionId ? { id: position.id, mode: "shadow" as const } : walletPositions.some((item) => item.id === input.positionId) ? { id: input.positionId, mode: "live" as const } : null) : position ? { id: position.id, mode: "shadow" as const } : walletPositions[0] ? { id: walletPositions[0].id, mode: "live" as const } : null;
+    if (input.positionId && !target) errors.push("Không tìm thấy vị thế đang mở được chọn.");
+    if (!triggersEnabled() && (input.type === "limit_buy" || target?.mode !== "live")) warnings.push("Engine shadow chỉ chạy khi TRADING_MODE=shadow; lệnh sẽ chờ cho đến khi bật.");
     const base = { tokenId: token.id, mode: "shadow" as const, maxSlippageBps: input.maxSlippageBps, expiresAt: input.expiresInHours ? new Date(Date.now() + input.expiresInHours * 3_600_000) : null };
     let rows: NewTriggerOrder[] = [];
     if (input.type === "limit_buy") {
@@ -34,8 +37,9 @@ export async function POST(request: Request) {
       if (token.status !== "eligible") warnings.push(`Token đang ở trạng thái "${token.status}", chưa vượt hard gate. Lệnh vẫn được tạo theo lựa chọn của bạn — rủi ro cao.`);
       rows = [{ ...base, type: "limit_buy", triggerMcapUsd: input.triggerMcapUsd.toFixed(2), buyLamports: buyLamports?.toString() ?? null }];
     } else {
-      if (!position) errors.push("Lệnh bán cần một vị thế shadow đang mở cho token này.");
-      const sell = { ...base, positionId: position?.id ?? null, sellPctBps: Math.round(input.sellPct * 100) };
+      if (!target) errors.push("Lệnh bán cần một vị thế đang mở (shadow hoặc ví trình duyệt) cho token này.");
+      if (target?.mode === "live") warnings.push("Vị thế ví trình duyệt: khi chạm ngưỡng app chỉ gửi cảnh báo và nút \"Bán ngay\" — bạn cần ký trên ví để bán.");
+      const sell = { ...base, mode: target?.mode ?? ("shadow" as const), positionId: target?.id ?? null, sellPctBps: Math.round(input.sellPct * 100) };
       if (input.type === "trailing_stop") rows = [{ ...sell, type: "trailing_stop", trailingBps: Math.round(input.trailingPct * 100), peakMcapUsd: currentMcap.toFixed(2) }];
       else if (input.type === "bracket") { const ocoGroup = randomUUID(); rows = [{ ...sell, type: "take_profit", triggerMcapUsd: input.takeProfitMcapUsd.toFixed(2), ocoGroup }, { ...sell, type: "stop_loss", triggerMcapUsd: input.stopLossMcapUsd.toFixed(2), ocoGroup }]; }
       else rows = [{ ...sell, type: input.type, triggerMcapUsd: input.triggerMcapUsd.toFixed(2) }];

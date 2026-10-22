@@ -40,6 +40,19 @@ Conditional orders priced in **market cap (USD)**, created from a token's detail
 - Positions opened by a limit buy are `manual`: automated exits (risk exit, stop loss, take profit, time stop, fast exits) never touch them; only your own trigger orders do. Partial sells release cost basis proportionally and accumulate realized PnL.
 - One open shadow position per token.
 
+## Manual trading from a browser wallet
+
+Buy and sell from your own wallet (Phantom, Solflare, Backpack… detected through Wallet Standard) on a token's detail page. **This uses real funds.** The app never sees a private key: it builds the Jupiter swap for your address and your wallet signs and broadcasts it.
+
+- Enable with `MANUAL_TRADING_ENABLED=true`. The emergency halt also blocks preparing new manual trades.
+- Flow: choose buy (SOL amount) or sell (% of the wallet's balance) → the server quotes and builds the transaction → a confirmation dialog shows amounts, minimum received, price impact, slippage, implied market cap and every failing or unknown risk check → your wallet signs and sends → the app records the signature, waits up to ~45s for confirmation and books the fill from the on-chain transaction.
+- There is no SOL cap on manual trades; the confirmation dialog is the safeguard.
+- Positions are `live` with origin `manual` and the wallet address. Repeated buys average into one position; sells can be partial and release cost basis proportionally. Bot portfolio limits, the daily spend cap and wallet reconciliation only consider the bot's own (`auto`) orders and positions.
+- **Recovery.** Because the wallet broadcasts before the app learns the signature, a closed browser can leave an order without one. The recovery job searches the wallet's recent history for a matching swap of that token and direction after the order was prepared; it only fails the order once the transaction's blockhash has expired without a match. A late signature is still accepted.
+- **TP/SL for wallet positions are alert-only.** Trigger orders can target a wallet position; when one fires the app sends a webhook/Telegram alert with a link and shows a "Bán ngay" button prefilled with the percentage. Your sell resolves the alert and cancels its OCO sibling.
+- The connected wallet is added to the watch-only list automatically (an existing label is kept).
+- `NEXT_PUBLIC_SOLANA_RPC_URL` (optional) is the RPC the browser uses for wallet bookkeeping; never put an API-keyed RPC URL in it.
+
 ## Watch-only wallets
 
 `/wallets` tracks public wallet addresses only; no private key is requested or stored. For each wallet the app shows:

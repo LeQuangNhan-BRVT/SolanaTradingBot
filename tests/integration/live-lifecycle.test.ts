@@ -37,8 +37,8 @@ const quote = (mint: string, inAmount: string, outAmount: string, buy = true): J
 const decision = { accepted: true, score: 80, reasons: [], metrics: {} };
 const execution = (mint: string, signature: string, tokenAmountRaw: string, lamports: string): LiveSwapExecution => ({ signature, wallet: "TestWallet1111111111111111111111111111111111", slot: 1, blockTime: new Date(), tokenMint: mint, tokenAmountRaw, lamports, feeLamports: "15000", prioritizationFeeLamports: null, computeUnitLimit: null });
 
-function mockChain(states: Record<string, { status: Awaited<ReturnType<RecoveryChain["getSignatureStatus"]>>; execution?: LiveSwapExecution }>, blockHeight = 1_000): RecoveryChain {
-  return { getSignatureStatus: async (signature) => states[signature]?.status ?? null, getBlockHeight: async () => blockHeight, fetchExecution: async (signature) => states[signature]?.execution ?? null };
+function mockChain(states: Record<string, { status: Awaited<ReturnType<RecoveryChain["getSignatureStatus"]>>; execution?: LiveSwapExecution }>, blockHeight = 1_000, activity: Awaited<ReturnType<RecoveryChain["walletActivity"]>> = []): RecoveryChain {
+  return { getSignatureStatus: async (signature) => states[signature]?.status ?? null, getBlockHeight: async () => blockHeight, fetchExecution: async (signature) => states[signature]?.execution ?? null, walletActivity: async () => activity };
 }
 
 test("crashed buy is confirmed exactly once by recovery with real cost and a fill", async () => {

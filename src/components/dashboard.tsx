@@ -3,6 +3,7 @@ import type { Candidate } from "@/lib/types";
 import { AddCaForm } from "./add-ca-form";
 import { TokenRow } from "./token-row";
 import { EntryControls } from "./entry-controls";
+import { WalletButton } from "./wallet-providers";
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const cash = (value: number | null) => value === null ? "Chưa rõ" : money.format(value);
@@ -21,7 +22,7 @@ export function Dashboard({ candidates, databaseConnected, entriesPaused, haltAl
       <div className="sidebar-bottom"><a href="/settings"><Settings size={18}/> Cài đặt</a><a href="/health"><HeartPulse size={18}/> System health</a><div className="system-status"><i/><div><strong>{databaseConnected ? "Database đã kết nối" : "Database offline"}</strong><span>Paper mode · Live trading đã khóa</span></div></div></div>
     </aside>
     <section className="workspace">
-      <header className="topbar"><div><span className="eyebrow">SYSTEM STATUS</span><strong>{databaseConnected ? "PostgreSQL online" : "PostgreSQL chưa cấu hình"}</strong></div><div className="top-actions">{haltAll ? <span className="mode-pill halted">TRADING HALTED</span> : entriesPaused ? <span className="mode-pill paused">ENTRIES PAUSED</span> : null}<span className="mode-pill">PAPER MODE</span></div></header>
+      <header className="topbar"><div><span className="eyebrow">SYSTEM STATUS</span><strong>{databaseConnected ? "PostgreSQL online" : "PostgreSQL chưa cấu hình"}</strong></div><div className="top-actions manual-head"><WalletButton/>{haltAll ? <span className="mode-pill halted">TRADING HALTED</span> : entriesPaused ? <span className="mode-pill paused">ENTRIES PAUSED</span> : null}<span className="mode-pill">PAPER MODE</span></div></header>
       <div className="content">
         <div className="page-title"><div><span className="eyebrow">CONTROL CENTER</span><h1>Tổng quan giao dịch</h1><p>Nhấn vào một token trong watchlist để xem holder, funding và bundle evidence.</p></div><div className="title-actions"><EntryControls initialPaused={entriesPaused} initialHalted={haltAll}/><AddCaForm/></div></div>
         <section className="metric-grid">

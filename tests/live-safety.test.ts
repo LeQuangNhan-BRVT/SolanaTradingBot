@@ -72,3 +72,22 @@ test("exit check triggers only near thresholds", () => {
   assert.equal(shouldCheckExit(2800, settings), true);
   assert.equal(shouldCheckExit(500, settings), false);
 });
+
+import { isValidSignature, matchManualSwap } from "../src/lib/live-safety";
+
+const walletChange = (signature: string, minutesAgo: number, delta: string, failed = false): WalletChange => ({ signature, blockTime: new Date(Date.now() - minutesAgo * 60_000), failed, feeLamports: "5000", solDeltaLamports: "-1", tokenChanges: [{ mint: "M", deltaRaw: delta, decimals: 6 }], kind: "other" });
+
+test("manual swap match finds the wallet's buy after the order was prepared", () => {
+  const since = new Date(Date.now() - 5 * 60_000);
+  const changes = [walletChange("old", 30, "100"), walletChange("failed", 1, "100", true), walletChange("sell", 1, "-100"), walletChange("buy", 2, "100")];
+  assert.equal(matchManualSwap(changes, "M", "buy", since, new Set()), "buy");
+  assert.equal(matchManualSwap(changes, "M", "sell", since, new Set()), "sell");
+  assert.equal(matchManualSwap(changes, "M", "buy", since, new Set(["buy"])), null);
+  assert.equal(matchManualSwap(changes, "OTHER", "buy", since, new Set()), null);
+});
+
+test("signature validation accepts base58 transaction signatures only", () => {
+  assert.equal(isValidSignature("5".repeat(88)), true);
+  assert.equal(isValidSignature("0OIl".repeat(22)), false);
+  assert.equal(isValidSignature("abc"), false);
+});

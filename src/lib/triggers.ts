@@ -75,7 +75,7 @@ export function costPortion(costLamports: string, quantityRaw: string, soldRaw: 
   return soldRaw >= quantity ? BigInt(costLamports) : BigInt(costLamports) * soldRaw / quantity;
 }
 
-const common = { mint: z.string().trim().min(32).max(44), maxSlippageBps: z.number().int().min(10).max(2_000).default(300), expiresInHours: z.number().positive().max(720).nullable().optional() };
+const common = { mint: z.string().trim().min(32).max(44), positionId: z.string().uuid().optional(), maxSlippageBps: z.number().int().min(10).max(2_000).default(300), expiresInHours: z.number().positive().max(720).nullable().optional() };
 const sellPct = z.number().min(1).max(100);
 export const createTriggerSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("limit_buy"), triggerMcapUsd: z.number().positive(), buySol: z.string().trim(), ...common }).strict(),

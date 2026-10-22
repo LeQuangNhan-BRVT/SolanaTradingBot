@@ -30,7 +30,9 @@ export async function runPriceLoop(handlers: { requestExitCheck: (request: ExitC
   const mode = process.env.TRADING_MODE ?? "paper";
   const positions = mode === "shadow" || mode === "live" ? (await listOpenPositionsForPricing()).filter((item) => item.mode === mode) : [];
   let triggers: Awaited<ReturnType<typeof listActiveTriggersForPricing>> = [];
-  if (triggersEnabled()) { await sweepTriggerOrders(); triggers = await listActiveTriggersForPricing(); }
+  // Shadow triggers simulate fills only in shadow mode; live alert-only triggers (browser-wallet positions) always run.
+  await sweepTriggerOrders();
+  triggers = await listActiveTriggersForPricing(triggersEnabled() ? ["shadow", "live"] : ["live"]);
   if (positions.length === 0 && triggers.length === 0) return { exits: { checked: 0, triggered: 0 }, triggers: { checked: 0, fired: 0 } };
   const prices = await fetchJupiterPrices([WSOL_MINT, ...positions.map((item) => item.mint), ...triggers.map((item) => item.mint)]);
   return {

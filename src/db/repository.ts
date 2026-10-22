@@ -117,9 +117,12 @@ export async function getTrackedWallet(address: string) {
   return row ?? null;
 }
 
-export async function saveTrackedWallet(address: string, label: string | null) {
+// preserveLabel: used when a connected browser wallet auto-registers, so a label the user chose is not overwritten.
+export async function saveTrackedWallet(address: string, label: string | null, preserveLabel = false) {
   if (!hasDatabase()) throw new Error("Database chưa được cấu hình.");
-  const [row] = await getDatabase().insert(trackedWallets).values({ address, label }).onConflictDoUpdate({ target: trackedWallets.address, set: { label, updatedAt: new Date() } }).returning();
+  const db = getDatabase();
+  if (preserveLabel) { await db.insert(trackedWallets).values({ address, label }).onConflictDoNothing(); return (await db.select().from(trackedWallets).where(eq(trackedWallets.address, address)).limit(1))[0]; }
+  const [row] = await db.insert(trackedWallets).values({ address, label }).onConflictDoUpdate({ target: trackedWallets.address, set: { label, updatedAt: new Date() } }).returning();
   return row;
 }
 
@@ -221,17 +224,21 @@ export async function failLiveOrder(orderId: string, error: string) {
   });
 }
 
-// Idempotent: only the first caller (live path or recovery job) moves the order to confirmed and opens the position.
+// Idempotent: only the first caller (live path, manual submit or recovery job) moves the order to confirmed and records the position.
 export async function confirmLiveEntry(orderId: string, execution: LiveSwapExecution) {
   if (!hasDatabase()) return null;
   if (BigInt(execution.tokenAmountRaw) <= 0n) throw new Error("Live entry token amount is zero.");
   return getDatabase().transaction(async (tx) => {
-    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw });
+    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw, origin: orders.origin });
     if (!order) return { duplicate: true as const, orderId, positionId: null };
     await tx.update(orders).set({ quoteRaw: { ...(order.quoteRaw ?? {}), execution } }).where(eq(orders.id, order.id));
     await tx.insert(fills).values({ orderId: order.id, signature: execution.signature, baseAmountRaw: execution.tokenAmountRaw, quoteAmountRaw: execution.lamports, feeLamports: execution.feeLamports, slot: execution.slot === null ? null : BigInt(execution.slot), filledAt: execution.blockTime ?? new Date() }).onConflictDoNothing();
-    const [position] = await tx.insert(positions).values({ tokenId: order.tokenId, mode: "live", status: "open", quantityRaw: execution.tokenAmountRaw, costLamports: execution.lamports }).returning({ id: positions.id });
-    await tx.insert(auditLogs).values({ eventType: "live.entry.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, signature: execution.signature, costLamports: execution.lamports, feeLamports: execution.feeLamports, tokenAmountRaw: execution.tokenAmountRaw, wallet: execution.wallet } });
+    // Manual buys into a token the wallet already holds through the app add to that position (cost averaging).
+    const [existing] = order.origin === "manual" ? await tx.select().from(positions).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "live"), eq(positions.origin, "manual"), eq(positions.wallet, execution.wallet), eq(positions.status, "open"))).for("update") : [];
+    const position = existing
+      ? (await tx.update(positions).set({ quantityRaw: (BigInt(existing.quantityRaw) + BigInt(execution.tokenAmountRaw)).toString(), costLamports: (BigInt(existing.costLamports) + BigInt(execution.lamports)).toString(), updatedAt: new Date() }).where(eq(positions.id, existing.id)).returning({ id: positions.id }))[0]
+      : (await tx.insert(positions).values({ tokenId: order.tokenId, mode: "live", status: "open", origin: order.origin, wallet: execution.wallet, quantityRaw: execution.tokenAmountRaw, costLamports: execution.lamports }).returning({ id: positions.id }))[0];
+    await tx.insert(auditLogs).values({ eventType: "live.entry.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, origin: order.origin, addedToExisting: Boolean(existing), signature: execution.signature, costLamports: execution.lamports, feeLamports: execution.feeLamports, tokenAmountRaw: execution.tokenAmountRaw, wallet: execution.wallet } });
     return { duplicate: false as const, orderId: order.id, positionId: position.id };
   });
 }
@@ -250,11 +257,11 @@ export async function getShadowPortfolioState(mint: string): Promise<PortfolioSt
 export async function getLivePortfolioState(mint: string): Promise<PortfolioState> {
   if (!hasDatabase()) return { openCount: 0, exposureLamports: "0", dailyRealizedPnlLamports: "0", consecutiveLosses: 0, lastClosedAt: null };
   const db = getDatabase();
-  const [open] = await db.select({ count: sql<number>`count(*)::int`, exposure: sql<string>`coalesce(sum(${positions.costLamports}),0)::text` }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.status,"open")));
-  const [daily] = await db.select({ pnl: sql<string>`coalesce(sum(${positions.realizedPnlLamports}),0)::text` }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.status,"closed"),sql`${positions.closedAt} >= date_trunc('day', now())`));
-  const recent = await db.select({ pnl: positions.realizedPnlLamports }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.status,"closed"))).orderBy(desc(positions.closedAt)).limit(20);
+  const [open] = await db.select({ count: sql<number>`count(*)::int`, exposure: sql<string>`coalesce(sum(${positions.costLamports}),0)::text` }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.origin,"auto"),eq(positions.status,"open")));
+  const [daily] = await db.select({ pnl: sql<string>`coalesce(sum(${positions.realizedPnlLamports}),0)::text` }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.origin,"auto"),eq(positions.status,"closed"),sql`${positions.closedAt} >= date_trunc('day', now())`));
+  const recent = await db.select({ pnl: positions.realizedPnlLamports }).from(positions).where(and(eq(positions.mode,"live"),eq(positions.origin,"auto"),eq(positions.status,"closed"))).orderBy(desc(positions.closedAt)).limit(20);
   let consecutiveLosses=0; for(const item of recent){if(BigInt(item.pnl)<0n)consecutiveLosses++;else break;}
-  const [last] = await db.select({ closedAt: positions.closedAt }).from(positions).innerJoin(tokens,eq(positions.tokenId,tokens.id)).where(and(eq(tokens.mint,mint),eq(positions.mode,"live"),eq(positions.status,"closed"))).orderBy(desc(positions.closedAt)).limit(1);
+  const [last] = await db.select({ closedAt: positions.closedAt }).from(positions).innerJoin(tokens,eq(positions.tokenId,tokens.id)).where(and(eq(tokens.mint,mint),eq(positions.mode,"live"),eq(positions.origin,"auto"),eq(positions.status,"closed"))).orderBy(desc(positions.closedAt)).limit(1);
   return { openCount: open?.count??0, exposureLamports: open?.exposure??"0", dailyRealizedPnlLamports: daily?.pnl??"0", consecutiveLosses, lastClosedAt: last?.closedAt??null };
 }
 
@@ -290,28 +297,36 @@ export async function reserveLiveExit(positionId: string, mint: string, quote: J
   });
 }
 
-// Idempotent: realized PnL uses the net SOL actually received, never the quote.
+// Idempotent: realized PnL uses the net SOL actually received, never the quote. Partial sells release cost proportionally.
 export async function confirmLiveExit(orderId: string, execution: LiveSwapExecution) {
   if (!hasDatabase()) return null;
   return getDatabase().transaction(async (tx) => {
-    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "sell"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw });
-    if (!order) return { duplicate: true as const, orderId, positionId: null, realizedPnlLamports: null };
+    const [order] = await tx.update(orders).set({ status: "confirmed", signature: execution.signature, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.mode, "live"), eq(orders.side, "sell"), inArray(orders.status, [...PENDING_LIVE_STATUSES]))).returning({ id: orders.id, tokenId: orders.tokenId, quoteRaw: orders.quoteRaw, origin: orders.origin });
+    if (!order) return { duplicate: true as const, orderId, positionId: null, realizedPnlLamports: null, closed: false };
     const meta = (order.quoteRaw ?? {}) as { exitReason?: string; pnlBps?: number };
     await tx.update(orders).set({ quoteRaw: { ...(order.quoteRaw ?? {}), execution } }).where(eq(orders.id, order.id));
     await tx.insert(fills).values({ orderId: order.id, signature: execution.signature, baseAmountRaw: execution.tokenAmountRaw, quoteAmountRaw: execution.lamports, feeLamports: execution.feeLamports, slot: execution.slot === null ? null : BigInt(execution.slot), filledAt: execution.blockTime ?? new Date() }).onConflictDoNothing();
-    const [position] = await tx.select().from(positions).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "live"), inArray(positions.status, ["closing", "open"]))).orderBy(desc(positions.openedAt)).limit(1);
-    if (!position) { await tx.insert(auditLogs).values({ eventType: "live.exit.orphaned", entityType: "order", entityId: order.id, payload: { signature: execution.signature } }); return { duplicate: false as const, orderId: order.id, positionId: null, realizedPnlLamports: null }; }
-    const realizedPnl = (BigInt(execution.lamports) - BigInt(position.costLamports)).toString();
-    const remaining = BigInt(position.quantityRaw) - BigInt(execution.tokenAmountRaw);
-    await tx.update(positions).set({ status: "closed", realizedPnlLamports: realizedPnl, closedAt: execution.blockTime ?? new Date(), updatedAt: new Date() }).where(eq(positions.id, position.id));
-    await tx.insert(auditLogs).values({ eventType: "live.exit.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, reason: meta.exitReason ?? null, quotedPnlBps: meta.pnlBps ?? null, signature: execution.signature, proceedsLamports: execution.lamports, feeLamports: execution.feeLamports, realizedPnlLamports: realizedPnl, remainingRaw: remaining > 0n ? remaining.toString() : "0", wallet: execution.wallet } });
-    return { duplicate: false as const, orderId: order.id, positionId: position.id, realizedPnlLamports: realizedPnl };
+    const owner = order.origin === "manual" ? and(eq(positions.origin, "manual"), eq(positions.wallet, execution.wallet)) : eq(positions.origin, "auto");
+    const [position] = await tx.select().from(positions).where(and(eq(positions.tokenId, order.tokenId), eq(positions.mode, "live"), inArray(positions.status, ["closing", "open"]), owner)).orderBy(desc(positions.openedAt)).limit(1).for("update");
+    if (!position) { await tx.insert(auditLogs).values({ eventType: "live.exit.orphaned", entityType: "order", entityId: order.id, payload: { signature: execution.signature, origin: order.origin, tokenAmountRaw: execution.tokenAmountRaw, lamports: execution.lamports } }); return { duplicate: false as const, orderId: order.id, positionId: null, realizedPnlLamports: null, closed: false }; }
+    // A wallet can sell more than the app tracked (tokens bought elsewhere); only the tracked quantity is accounted.
+    const sold = BigInt(execution.tokenAmountRaw) > BigInt(position.quantityRaw) ? BigInt(position.quantityRaw) : BigInt(execution.tokenAmountRaw);
+    const proceeds = sold === BigInt(execution.tokenAmountRaw) ? BigInt(execution.lamports) : BigInt(execution.lamports) * sold / BigInt(execution.tokenAmountRaw);
+    const releasedCost = costPortion(position.costLamports, position.quantityRaw, sold), pnl = proceeds - releasedCost;
+    const remaining = BigInt(position.quantityRaw) - sold, closed = remaining === 0n, realized = (BigInt(position.realizedPnlLamports) + pnl).toString();
+    await tx.update(positions).set({ quantityRaw: remaining.toString(), costLamports: (BigInt(position.costLamports) - releasedCost).toString(), realizedPnlLamports: realized, status: closed ? "closed" : "open", ...(closed ? { closedAt: execution.blockTime ?? new Date() } : {}), updatedAt: new Date() }).where(eq(positions.id, position.id));
+    // Alert-only triggers awaiting the user's action are resolved by the sell they prompted.
+    const resolved = await tx.update(triggerOrders).set({ status: "filled", filledAt: new Date(), resultOrderId: order.id, updatedAt: new Date() }).where(and(eq(triggerOrders.positionId, position.id), eq(triggerOrders.status, "triggered"))).returning({ ocoGroup: triggerOrders.ocoGroup });
+    for (const group of new Set(resolved.map((row) => row.ocoGroup).filter((value): value is string => value !== null))) await tx.update(triggerOrders).set({ status: "cancelled", lastError: "OCO sibling filled", updatedAt: new Date() }).where(and(eq(triggerOrders.ocoGroup, group), eq(triggerOrders.status, "active")));
+    if (closed) await tx.update(triggerOrders).set({ status: "cancelled", lastError: "Position closed", updatedAt: new Date() }).where(and(eq(triggerOrders.positionId, position.id), eq(triggerOrders.status, "active")));
+    await tx.insert(auditLogs).values({ eventType: "live.exit.confirmed", entityType: "order", entityId: order.id, payload: { mint: execution.tokenMint, positionId: position.id, origin: order.origin, reason: meta.exitReason ?? null, quotedPnlBps: meta.pnlBps ?? null, signature: execution.signature, proceedsLamports: proceeds.toString(), feeLamports: execution.feeLamports, releasedCostLamports: releasedCost.toString(), realizedPnlLamports: realized, remainingRaw: remaining.toString(), closed, wallet: execution.wallet } });
+    return { duplicate: false as const, orderId: order.id, positionId: position.id, realizedPnlLamports: realized, closed };
   });
 }
 
 export async function listPendingLiveOrders(olderThanMs: number) {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, wallet: orders.wallet, lastValidBlockHeight: orders.lastValidBlockHeight, updatedAt: orders.updatedAt, mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES]), sql`${orders.updatedAt} < now() - (${olderThanMs} * interval '1 millisecond')`));
+  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, wallet: orders.wallet, lastValidBlockHeight: orders.lastValidBlockHeight, origin: orders.origin, createdAt: orders.createdAt, updatedAt: orders.updatedAt, mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES]), sql`${orders.updatedAt} < now() - (${olderThanMs} * interval '1 millisecond')`));
 }
 
 // A position left in `closing` with no pending sell order would never be exited again.
@@ -325,22 +340,22 @@ export async function releaseOrphanClosingPositions() {
 export async function getLiveSpentTodayLamports() {
   if (!hasDatabase()) return 0n;
   const db = getDatabase();
-  const [filled] = await db.select({ total: sql<string>`coalesce(sum(${fills.quoteAmountRaw}),0)::text` }).from(fills).innerJoin(orders, eq(fills.orderId, orders.id)).where(and(eq(orders.mode, "live"), eq(orders.side, "buy"), sql`${fills.filledAt} >= date_trunc('day', now())`));
-  const [pending] = await db.select({ total: sql<string>`coalesce(sum(${orders.requestedAmountRaw}),0)::text` }).from(orders).where(and(eq(orders.mode, "live"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
+  const [filled] = await db.select({ total: sql<string>`coalesce(sum(${fills.quoteAmountRaw}),0)::text` }).from(fills).innerJoin(orders, eq(fills.orderId, orders.id)).where(and(eq(orders.mode, "live"), eq(orders.origin, "auto"), eq(orders.side, "buy"), sql`${fills.filledAt} >= date_trunc('day', now())`));
+  const [pending] = await db.select({ total: sql<string>`coalesce(sum(${orders.requestedAmountRaw}),0)::text` }).from(orders).where(and(eq(orders.mode, "live"), eq(orders.origin, "auto"), eq(orders.side, "buy"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
   return BigInt(filled?.total ?? "0") + BigInt(pending?.total ?? "0");
 }
 
 export async function getLiveExpectedHoldings() {
   if (!hasDatabase()) return { expected: new Map<string, bigint>(), pendingMints: new Set<string>() };
   const db = getDatabase();
-  const rows = await db.select({ mint: tokens.mint, quantity: sql<string>`sum(${positions.quantityRaw})::text` }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), inArray(positions.status, ["open", "closing"]))).groupBy(tokens.mint);
-  const pending = await db.select({ mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
+  const rows = await db.select({ mint: tokens.mint, quantity: sql<string>`sum(${positions.quantityRaw})::text` }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), eq(positions.origin, "auto"), inArray(positions.status, ["open", "closing"]))).groupBy(tokens.mint);
+  const pending = await db.select({ mint: tokens.mint }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), eq(orders.origin, "auto"), inArray(orders.status, [...PENDING_LIVE_STATUSES])));
   return { expected: new Map(rows.map((row) => [row.mint, BigInt(row.quantity)])), pendingMints: new Set(pending.map((row) => row.mint)) };
 }
 
 export async function listRecentLiveOrders(limit = 30) {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, error: orders.error, requestedAmountRaw: orders.requestedAmountRaw, createdAt: orders.createdAt, updatedAt: orders.updatedAt, mint: tokens.mint, symbol: tokens.symbol, filledLamports: fills.quoteAmountRaw, feeLamports: fills.feeLamports }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).leftJoin(fills, eq(fills.orderId, orders.id)).where(eq(orders.mode, "live")).orderBy(desc(orders.createdAt)).limit(limit);
+  return getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, error: orders.error, requestedAmountRaw: orders.requestedAmountRaw, origin: orders.origin, wallet: orders.wallet, createdAt: orders.createdAt, updatedAt: orders.updatedAt, mint: tokens.mint, symbol: tokens.symbol, filledLamports: fills.quoteAmountRaw, feeLamports: fills.feeLamports }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).leftJoin(fills, eq(fills.orderId, orders.id)).where(eq(orders.mode, "live")).orderBy(desc(orders.createdAt)).limit(limit);
 }
 
 export async function listOpenPositionsForPricing() {
@@ -449,7 +464,8 @@ export async function getTriggerContext(mint: string) {
   if (!token) return null;
   const [pool] = await db.select({ priceUsd: pools.priceUsd }).from(pools).where(eq(pools.tokenId, token.id)).orderBy(desc(pools.liquidityUsd)).limit(1);
   const [position] = await db.select({ id: positions.id, origin: positions.origin, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, openedAt: positions.openedAt }).from(positions).where(and(eq(positions.tokenId, token.id), eq(positions.mode, "shadow"), eq(positions.status, "open"))).limit(1);
-  return { token, priceUsd: pool?.priceUsd ?? null, position: position ?? null };
+  const walletPositions = await db.select({ id: positions.id, wallet: positions.wallet, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports }).from(positions).where(and(eq(positions.tokenId, token.id), eq(positions.mode, "live"), eq(positions.origin, "manual"), eq(positions.status, "open")));
+  return { token, priceUsd: pool?.priceUsd ?? null, position: position ?? null, walletPositions };
 }
 
 export async function createTriggerOrders(rows: NewTriggerOrder[]) {
@@ -461,15 +477,16 @@ export async function createTriggerOrders(rows: NewTriggerOrder[]) {
   });
 }
 
+// Live alert-only triggers that already fired (waiting for the user to sell) can also be dismissed.
 export async function cancelTriggerOrder(id: string, reason = "Cancelled by user") {
   if (!hasDatabase()) return null;
-  const [row] = await getDatabase().update(triggerOrders).set({ status: "cancelled", lastError: reason, updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), eq(triggerOrders.status, "active"))).returning({ id: triggerOrders.id });
+  const [row] = await getDatabase().update(triggerOrders).set({ status: "cancelled", lastError: reason, updatedAt: new Date() }).where(and(eq(triggerOrders.id, id), sql`(${triggerOrders.status} = 'active' or (${triggerOrders.status} = 'triggered' and ${triggerOrders.mode} = 'live'))`)).returning({ id: triggerOrders.id });
   return row ?? null;
 }
 
 export async function listTriggerOrders(options: { mint?: string; limit?: number } = {}) {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, status: triggerOrders.status, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, buyLamports: triggerOrders.buyLamports, sellPctBps: triggerOrders.sellPctBps, maxSlippageBps: triggerOrders.maxSlippageBps, ocoGroup: triggerOrders.ocoGroup, expiresAt: triggerOrders.expiresAt, lastMcapUsd: triggerOrders.lastMcapUsd, lastError: triggerOrders.lastError, positionId: triggerOrders.positionId, createdAt: triggerOrders.createdAt, filledAt: triggerOrders.filledAt, mint: tokens.mint, symbol: tokens.symbol }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(options.mint ? eq(tokens.mint, options.mint) : undefined).orderBy(desc(triggerOrders.createdAt)).limit(options.limit ?? 200);
+  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, status: triggerOrders.status, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, buyLamports: triggerOrders.buyLamports, sellPctBps: triggerOrders.sellPctBps, maxSlippageBps: triggerOrders.maxSlippageBps, ocoGroup: triggerOrders.ocoGroup, mode: triggerOrders.mode, expiresAt: triggerOrders.expiresAt, lastMcapUsd: triggerOrders.lastMcapUsd, lastError: triggerOrders.lastError, positionId: triggerOrders.positionId, createdAt: triggerOrders.createdAt, filledAt: triggerOrders.filledAt, mint: tokens.mint, symbol: tokens.symbol }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(options.mint ? eq(tokens.mint, options.mint) : undefined).orderBy(desc(triggerOrders.createdAt)).limit(options.limit ?? 200);
 }
 
 // Housekeeping before each evaluation: expire old orders and cancel sell orders whose position is gone.
@@ -477,13 +494,13 @@ export async function sweepTriggerOrders() {
   if (!hasDatabase()) return { expired: 0, cancelled: 0 };
   const db = getDatabase();
   const expired = await db.update(triggerOrders).set({ status: "expired", updatedAt: new Date() }).where(and(eq(triggerOrders.status, "active"), sql`${triggerOrders.expiresAt} < now()`)).returning({ id: triggerOrders.id });
-  const cancelled = await db.update(triggerOrders).set({ status: "cancelled", lastError: "Position closed", updatedAt: new Date() }).where(and(eq(triggerOrders.status, "active"), isNotNull(triggerOrders.positionId), sql`not exists (select 1 from ${positions} where ${positions.id} = ${triggerOrders.positionId} and ${positions.status} = 'open')`)).returning({ id: triggerOrders.id });
+  const cancelled = await db.update(triggerOrders).set({ status: "cancelled", lastError: "Position closed", updatedAt: new Date() }).where(and(sql`(${triggerOrders.status} = 'active' or (${triggerOrders.status} = 'triggered' and ${triggerOrders.mode} = 'live'))`, isNotNull(triggerOrders.positionId), sql`not exists (select 1 from ${positions} where ${positions.id} = ${triggerOrders.positionId} and ${positions.status} = 'open')`)).returning({ id: triggerOrders.id });
   return { expired: expired.length, cancelled: cancelled.length };
 }
 
-export async function listActiveTriggersForPricing() {
+export async function listActiveTriggersForPricing(modes: Array<"shadow" | "live"> = ["shadow"]) {
   if (!hasDatabase()) return [];
-  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, mint: tokens.mint, supplyRaw: tokens.supplyRaw, decimals: tokens.decimals }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(and(eq(triggerOrders.status, "active"), eq(triggerOrders.mode, "shadow")));
+  return getDatabase().select({ id: triggerOrders.id, type: triggerOrders.type, mode: triggerOrders.mode, triggerMcapUsd: triggerOrders.triggerMcapUsd, trailingBps: triggerOrders.trailingBps, peakMcapUsd: triggerOrders.peakMcapUsd, mint: tokens.mint, supplyRaw: tokens.supplyRaw, decimals: tokens.decimals }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(and(eq(triggerOrders.status, "active"), inArray(triggerOrders.mode, modes.length ? modes : ["shadow"])));
 }
 
 export async function recordTriggerObservation(id: string, mcapUsd: number, peakMcapUsd: number | null) {
@@ -545,6 +562,55 @@ export async function fillTriggerSell(triggerId: string, quote: JupiterQuote, so
     await tx.insert(auditLogs).values({ eventType: closed ? "shadow.exit.simulated" : "shadow.partial_exit.simulated", entityType: "order", entityId: sell.id, payload: { positionId: position.id, triggerId: order.id, reason: `trigger_${order.type}`, pnlBps, soldRaw: soldRaw.toString(), remainingRaw: remaining.toString(), proceedsLamports: quote.outAmount, releasedCostLamports: releasedCost.toString(), realizedPnlLamports: realized, impliedMcapUsd } });
     return { orderId: sell.id, positionId: position.id, closed, pnlBps, realizedPnlLamports: realized };
   });
+}
+
+// ---------- Manual trades from the user's browser wallet ----------
+export async function createManualOrder(input: { mint: string; side: "buy" | "sell"; wallet: string; requestedAmountRaw: string; quote: JupiterQuote; lastValidBlockHeight: bigint }) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  return getDatabase().transaction(async (tx) => {
+    const [token] = await tx.select({ id: tokens.id }).from(tokens).where(eq(tokens.mint, input.mint)).limit(1);
+    if (!token) throw new Error("Token chưa có trong watchlist.");
+    const [order] = await tx.insert(orders).values({ tokenId: token.id, mode: "live", origin: "manual", side: input.side, status: "quoted", idempotencyKey: `manual:${crypto.randomUUID()}`, requestedAmountRaw: input.requestedAmountRaw, quoteRaw: input.quote, wallet: input.wallet, lastValidBlockHeight: input.lastValidBlockHeight }).returning({ id: orders.id });
+    await tx.insert(auditLogs).values({ eventType: "manual.order.prepared", entityType: "order", entityId: order.id, payload: { mint: input.mint, side: input.side, wallet: input.wallet, requestedAmountRaw: input.requestedAmountRaw, expectedOutRaw: input.quote.outAmount } });
+    return order;
+  });
+}
+
+export async function getManualOrder(id: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().select({ id: orders.id, side: orders.side, status: orders.status, signature: orders.signature, wallet: orders.wallet, error: orders.error, lastValidBlockHeight: orders.lastValidBlockHeight, createdAt: orders.createdAt, mint: tokens.mint, symbol: tokens.symbol }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.id, id), eq(orders.origin, "manual"))).limit(1);
+  return row ?? null;
+}
+
+// Records the signature the wallet returned after broadcasting. Accepted even when halted, cancelled or failed by recovery: the transaction may already be on-chain.
+export async function markManualOrderSubmitted(id: string, signature: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().update(orders).set({ status: "submitted", signature, sentAt: new Date(), updatedAt: new Date() }).where(and(eq(orders.id, id), eq(orders.origin, "manual"), isNull(orders.signature), inArray(orders.status, ["quoted", "failed", "cancelled"]))).returning({ id: orders.id });
+  return row ?? null;
+}
+
+// Only before the user has signed: once a wallet may have broadcast, recovery decides.
+export async function cancelManualOrder(id: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().update(orders).set({ status: "cancelled", error: "Cancelled before signing", updatedAt: new Date() }).where(and(eq(orders.id, id), eq(orders.origin, "manual"), eq(orders.status, "quoted"), isNull(orders.signature))).returning({ id: orders.id });
+  return row ?? null;
+}
+
+export async function isSignatureRecorded(signature: string) {
+  if (!hasDatabase()) return false;
+  const [row] = await getDatabase().select({ id: orders.id }).from(orders).where(eq(orders.signature, signature)).limit(1);
+  return Boolean(row);
+}
+
+export async function attachRecoveredSignature(id: string, signature: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().update(orders).set({ status: "submitted", signature, updatedAt: new Date() }).where(and(eq(orders.id, id), eq(orders.status, "quoted"), isNull(orders.signature))).returning({ id: orders.id });
+  return row ?? null;
+}
+
+export async function listManualPositions(mint?: string) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: positions.id, mint: tokens.mint, symbol: tokens.symbol, decimals: tokens.decimals, wallet: positions.wallet, quantityRaw: positions.quantityRaw, costLamports: positions.costLamports, realizedPnlLamports: positions.realizedPnlLamports, openedAt: positions.openedAt, status: positions.status }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.mode, "live"), eq(positions.origin, "manual"), eq(positions.status, "open"), mint ? eq(tokens.mint, mint) : undefined)).orderBy(desc(positions.openedAt));
 }
 
 export async function getShadowPositionById(id: string) {

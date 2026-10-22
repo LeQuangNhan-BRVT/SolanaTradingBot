@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { formatMcap, TRIGGER_LABELS, type TriggerType } from "@/lib/triggers";
 
-export type TriggerRow = { id: string; type: string; status: string; triggerMcapUsd: string | null; trailingBps: number | null; peakMcapUsd: string | null; buyLamports: string | null; sellPctBps: number | null; maxSlippageBps: number; ocoGroup: string | null; expiresAt: string | null; lastMcapUsd: string | null; lastError: string | null; createdAt: string; filledAt: string | null; mint: string; symbol: string };
+export type TriggerRow = { id: string; type: string; status: string; triggerMcapUsd: string | null; trailingBps: number | null; peakMcapUsd: string | null; buyLamports: string | null; sellPctBps: number | null; maxSlippageBps: number; ocoGroup: string | null; expiresAt: string | null; lastMcapUsd: string | null; lastError: string | null; createdAt: string; filledAt: string | null; mint: string; symbol: string; mode: string };
 const STATUS: Record<string, string> = { active: "Đang chờ", triggered: "Đang khớp", filled: "Đã khớp", cancelled: "Đã hủy", expired: "Hết hạn", failed: "Thất bại" };
 const sol = (lamports: string) => `${(Number(lamports) / 1e9).toFixed(4)} SOL`;
 
@@ -28,8 +28,8 @@ export function TriggerList({ rows, showToken = false }: { rows: TriggerRow[]; s
     <td>{condition(row)}</td>
     <td>{row.buyLamports ? sol(row.buyLamports) : `${((row.sellPctBps ?? 0) / 100).toFixed(0)}% vị thế`}</td>
     <td>{formatMcap(row.lastMcapUsd)}</td>
-    <td>{STATUS[row.status] ?? row.status}{row.expiresAt && row.status === "active" && <small className="field-hint"> · hết hạn {new Date(row.expiresAt).toLocaleString("vi-VN")}</small>}</td>
+    <td>{row.mode === "live" && row.status === "triggered" ? <Link href={`/tokens/${row.mint}?sell=${(row.sellPctBps ?? 10_000) / 100}#manual-trade`}>Chờ bạn bán →</Link> : STATUS[row.status] ?? row.status}{row.mode === "live" && <span className="tag">VÍ</span>}{row.expiresAt && row.status === "active" && <small className="field-hint"> · hết hạn {new Date(row.expiresAt).toLocaleString("vi-VN")}</small>}</td>
     <td className="field-hint" title={row.lastError ?? ""}>{row.lastError?.slice(0, 70) ?? ""}</td>
-    <td>{row.status === "active" && <button className="icon-button" disabled={busy === row.id} title="Hủy lệnh" aria-label={`Hủy lệnh ${row.id}`} onClick={() => cancel(row.id)}><X size={14}/></button>}</td>
+    <td>{(row.status === "active" || (row.mode === "live" && row.status === "triggered")) && <button className="icon-button" disabled={busy === row.id} title="Hủy lệnh" aria-label={`Hủy lệnh ${row.id}`} onClick={() => cancel(row.id)}><X size={14}/></button>}</td>
   </tr>)}</tbody></table></div>;
 }

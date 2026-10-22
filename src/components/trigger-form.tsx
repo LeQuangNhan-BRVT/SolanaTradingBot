@@ -17,15 +17,20 @@ function McapField({ label, value, onChange, hint }: { label: string; value: str
   return <label>{label}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder="ví dụ 2.5M, 750k" inputMode="decimal"/><small className="field-hint">{value ? parsed ? `= ${formatMcap(parsed)}` : "Không đọc được giá trị" : hint ?? ""}</small></label>;
 }
 
-export function TriggerForm({ mint, currentMcapUsd, hasPosition, eligible }: { mint: string; currentMcapUsd: number | null; hasPosition: boolean; eligible: boolean }) {
+export type TriggerTarget = { id: string; label: string; mode: "shadow" | "live" };
+
+export function TriggerForm({ mint, currentMcapUsd, targets, hasShadowPosition, eligible }: { mint: string; currentMcapUsd: number | null; targets: TriggerTarget[]; hasShadowPosition: boolean; eligible: boolean }) {
   const router = useRouter();
+  const hasPosition = targets.length > 0;
   const [type, setType] = useState<FormType>(hasPosition ? "bracket" : "limit_buy");
+  const [positionId, setPositionId] = useState(targets[0]?.id ?? "");
+  const target = targets.find((item) => item.id === positionId);
   const [mcap, setMcap] = useState(""), [tp, setTp] = useState(""), [sl, setSl] = useState(""), [buySol, setBuySol] = useState("0.05"), [sellPct, setSellPct] = useState("100"), [trailingPct, setTrailingPct] = useState("20"), [slippagePct, setSlippagePct] = useState("3"), [expiresInHours, setExpires] = useState("");
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<string | null>(null), [warnings, setWarnings] = useState<string[]>([]);
   const isSell = TYPES.find((item) => item.value === type)!.sell;
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setMessage(null); setWarnings([]);
-    const common = { mint, maxSlippageBps: Math.round(Number(slippagePct) * 100), expiresInHours: expiresInHours ? Number(expiresInHours) : null };
+    const common = { mint, ...(type !== "limit_buy" && positionId ? { positionId } : {}), maxSlippageBps: Math.round(Number(slippagePct) * 100), expiresInHours: expiresInHours ? Number(expiresInHours) : null };
     const body = type === "limit_buy" ? { ...common, type, triggerMcapUsd: parseMcapInput(mcap), buySol }
       : type === "bracket" ? { ...common, type, takeProfitMcapUsd: parseMcapInput(tp), stopLossMcapUsd: parseMcapInput(sl), sellPct: Number(sellPct) }
       : type === "trailing_stop" ? { ...common, type, trailingPct: Number(trailingPct), sellPct: Number(sellPct) }
@@ -38,8 +43,10 @@ export function TriggerForm({ mint, currentMcapUsd, hasPosition, eligible }: { m
     } catch { setMessage("Không thể kết nối máy chủ."); } finally { setBusy(false); }
   }
   return <form className="watch-form trigger-form" onSubmit={submit}>
-    <p className="field-hint">Market cap hiện tại: <strong>{formatMcap(currentMcapUsd)}</strong> · {hasPosition ? "đang có vị thế shadow" : "chưa có vị thế"}</p>
-    <div className="watch-tabs">{TYPES.map((item) => { const disabled = item.sell ? !hasPosition : hasPosition; return <button type="button" key={item.value} className={`tab-button${type === item.value ? " active" : ""}`} disabled={disabled} title={disabled ? (item.sell ? "Cần vị thế đang mở" : "Token đã có vị thế") : ""} onClick={() => setType(item.value)}>{item.label}</button>; })}</div>
+    <p className="field-hint">Market cap hiện tại: <strong>{formatMcap(currentMcapUsd)}</strong> · {hasPosition ? `${targets.length} vị thế đang mở` : "chưa có vị thế"}</p>
+    <div className="watch-tabs">{TYPES.map((item) => { const disabled = item.sell ? !hasPosition : hasShadowPosition; return <button type="button" key={item.value} className={`tab-button${type === item.value ? " active" : ""}`} disabled={disabled} title={disabled ? (item.sell ? "Cần vị thế đang mở" : "Token đã có vị thế") : ""} onClick={() => setType(item.value)}>{item.label}</button>; })}</div>
+    {isSell && targets.length > 0 && <label className="target-select">Áp dụng cho vị thế<select value={positionId} onChange={(event) => setPositionId(event.target.value)}>{targets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>}
+    {isSell && target?.mode === "live" && <p className="form-message">Vị thế ví trình duyệt: khi chạm ngưỡng app chỉ gửi cảnh báo và nút &quot;Bán ngay&quot; — bạn ký trên ví để bán.</p>}
     {type === "limit_buy" && !eligible && <p className="form-message">⚠ Token chưa vượt hard gate (chưa eligible). Lệnh vẫn được phép theo cài đặt của bạn, nhưng rủi ro rất cao.</p>}
     <div className="watch-form-grid">
       {(type === "limit_buy" || type === "take_profit" || type === "stop_loss") && <McapField label={type === "limit_buy" ? "Mua khi mcap ≤" : type === "take_profit" ? "Bán khi mcap ≥" : "Bán khi mcap ≤"} value={mcap} onChange={setMcap}/>}

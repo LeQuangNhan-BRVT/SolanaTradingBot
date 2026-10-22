@@ -28,10 +28,16 @@ export async function scanTriggerOrders(triggers: ActiveTrigger[], prices: Map<s
 
 // Re-validates a fired trigger with an exact Jupiter quote and fills it as a simulated order.
 export async function executeTriggerOrder(triggerId: string) {
-  if (!triggersEnabled()) return { triggerId, skipped: true, reason: "TRADING_MODE is not shadow." };
   const claimed = await claimTriggerOrder(triggerId);
   if (!claimed) return { triggerId, skipped: true, reason: "Not active." };
   const { order, token } = claimed, label = TRIGGER_LABELS[order.type as TriggerType];
+  // Browser-wallet positions: the app holds no key, so the order stays `triggered` until the user sells with one click.
+  if (order.mode === "live") {
+    const link = `${process.env.APP_ORIGIN ?? "http://127.0.0.1:3000"}/tokens/${token?.mint}?sell=${(order.sellPctBps ?? 10_000) / 100}#manual-trade`;
+    void sendAlertOnce(`trigger-alert:${order.id}`, 24 * 60 * 60_000, { type: "trigger.alert", severity: order.type === "take_profit" ? "info" : "warning", title: `${label} ${token?.symbol ?? ""} chạm ngưỡng — cần bạn bán`, message: `Bán ${((order.sellPctBps ?? 10_000) / 100).toFixed(0)}% từ ví trình duyệt: ${link}`, data: { triggerId: order.id, link } });
+    return { triggerId, alerted: true, link };
+  }
+  if (!triggersEnabled()) { await releaseTriggerOrder(order.id, "TRADING_MODE is not shadow."); return { triggerId, skipped: true, reason: "TRADING_MODE is not shadow." }; }
   try {
     if (!token || token.supplyRaw === null || token.decimals === null) throw new TriggerRejectedError("Token thiếu supply/decimals để tính market cap.");
     const solUsd = (await fetchJupiterPrices([WSOL_MINT])).get(WSOL_MINT);

@@ -75,3 +75,17 @@ export function estimatePositionPnlBps(input: { quantityRaw: string; decimals: n
 }
 
 export const shouldCheckExit = (estimatedBps: number, settings: { stopLossBps: number; takeProfitBps: number }, marginBps = 300) => estimatedBps <= settings.stopLossBps + marginBps || estimatedBps >= settings.takeProfitBps - marginBps;
+
+// ---------- Manual (browser wallet) orders ----------
+// The wallet broadcasts before the app learns the signature; if the browser closed in between, find the swap in the wallet's history.
+export function matchManualSwap(changes: WalletChange[], mint: string, side: "buy" | "sell", since: Date, excludeSignatures: Set<string>) {
+  const earliest = since.getTime() - 120_000;
+  const match = changes
+    .filter((change) => !change.failed && !excludeSignatures.has(change.signature) && (change.blockTime?.getTime() ?? 0) >= earliest)
+    .find((change) => change.tokenChanges.some((token) => token.mint === mint && (side === "buy" ? BigInt(token.deltaRaw) > 0n : BigInt(token.deltaRaw) < 0n)));
+  return match?.signature ?? null;
+}
+
+export function isValidSignature(value: string) {
+  return /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(value);
+}

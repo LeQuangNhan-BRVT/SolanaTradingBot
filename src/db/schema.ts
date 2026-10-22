@@ -48,7 +48,9 @@ export const signals = pgTable("signals", {
 export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().primaryKey(), signalId: uuid("signal_id").references(() => signals.id), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull().default("paper"), side: orderSide("side").notNull(), status: orderStatus("status").notNull().default("created"), idempotencyKey: text("idempotency_key").notNull(), requestedAmountRaw: numeric("requested_amount_raw", { precision: 78, scale: 0 }).notNull(), quoteRaw: jsonb("quote_raw").$type<Record<string, unknown>>(), signature: text("signature"), error: text("error"),
   // Live recovery: the signing wallet and blockhash expiry are persisted before a transaction is sent.
-  wallet: text("wallet"), lastValidBlockHeight: bigint("last_valid_block_height", { mode: "bigint" }), sentAt: timestamp("sent_at", { withTimezone: true }), ...timestamps,
+  wallet: text("wallet"), lastValidBlockHeight: bigint("last_valid_block_height", { mode: "bigint" }), sentAt: timestamp("sent_at", { withTimezone: true }),
+  // "manual" orders are signed and sent by the user's browser wallet; "auto" orders by the bot's hot wallet.
+  origin: text("origin").notNull().default("auto"), ...timestamps,
 }, (table) => [uniqueIndex("orders_idempotency_unique").on(table.idempotencyKey), uniqueIndex("orders_signature_unique").on(table.signature), index("orders_status_created_idx").on(table.status, table.createdAt)]);
 
 export const fills = pgTable("fills", {
@@ -58,7 +60,7 @@ export const fills = pgTable("fills", {
 export const positions = pgTable("positions", {
   id: uuid("id").defaultRandom().primaryKey(), tokenId: uuid("token_id").notNull().references(() => tokens.id), mode: tradingMode("mode").notNull(), status: positionStatus("status").notNull().default("open"), quantityRaw: numeric("quantity_raw", { precision: 78, scale: 0 }).notNull(), costLamports: numeric("cost_lamports", { precision: 30, scale: 0 }).notNull(), realizedPnlLamports: numeric("realized_pnl_lamports", { precision: 30, scale: 0 }).notNull().default("0"),
   // "manual" positions come from trigger orders and are exited only by the user's own triggers, never by automated exit rules.
-  origin: text("origin").notNull().default("auto"), openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(), closedAt: timestamp("closed_at", { withTimezone: true }), ...timestamps,
+  origin: text("origin").notNull().default("auto"), wallet: text("wallet"), openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(), closedAt: timestamp("closed_at", { withTimezone: true }), ...timestamps,
 }, (table) => [index("positions_token_status_idx").on(table.tokenId, table.status), index("positions_mode_status_idx").on(table.mode, table.status)]);
 
 export const positionMarks = pgTable("position_marks", {

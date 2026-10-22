@@ -67,7 +67,8 @@ export function liveConnection() {
   return new Connection(process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com", "confirmed");
 }
 
-async function buildJupiterSwap(quote: JupiterQuote, userPublicKey: string) {
+// Builds an unsigned Jupiter swap transaction for any fee payer: the bot hot wallet or the user's browser wallet.
+export async function buildJupiterSwap(quote: JupiterQuote, userPublicKey: string) {
   const url = process.env.JUPITER_SWAP_URL ?? "https://api.jup.ag/swap/v1/swap";
   const headers = { ...jupiterHeaders(), "content-type": "application/json" };
   const maxLamports = Number(process.env.LIVE_MAX_PRIORITY_FEE_LAMPORTS ?? 500_000);

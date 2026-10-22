@@ -54,6 +54,11 @@ export async function getWalletHoldings(address: string) {
   return { lamports: String(lamports), tokens: [...holdings.values()].filter((item) => item.amountRaw !== "0") };
 }
 
+export async function getTokenBalanceRaw(owner: string, mint: string) {
+  const accounts = await connection().getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }, "confirmed");
+  return accounts.value.reduce((sum, account) => sum + BigInt((account.account.data.parsed?.info?.tokenAmount?.amount as string | undefined) ?? "0"), 0n);
+}
+
 export async function getWalletBalances(addresses: string[]) {
   if (addresses.length === 0) return new Map<string, string>();
   const infos = await connection().getMultipleAccountsInfo(addresses.map((address) => new PublicKey(address)), "confirmed");
