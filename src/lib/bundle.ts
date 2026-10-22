@@ -1,3 +1,4 @@
+import { MAX_SUPPORTED_TX_VERSION } from "./solana";
 import type { HolderGraph } from "./graph";
 
 export type BundleEvidence={code:"common_funder"|"same_slot_buy"|"similar_size"|"early_buy";wallets:string[];weight:number;detail:string;signatures:string[]};
@@ -9,7 +10,7 @@ export async function inspectBundle(mint:string,graph:HolderGraph,from:Date,to:D
  const key=process.env.HELIUS_API_KEY;if(!key||!graph.fundingComplete)return{suspectedBundlePct:0,confidence:0,coveredTransactions:0,truncated:true,suspiciousWallets:[],evidence:[]};
  const records:Array<Record<string,unknown>>=[];let paginationToken:string|undefined;
  for(let page=0;page<10;page++){
-  const options:Record<string,unknown>={transactionDetails:"full",encoding:"jsonParsed",maxSupportedTransactionVersion:0,sortOrder:"asc",limit:1000,filters:{blockTime:{gte:Math.floor(from.getTime()/1000),lte:Math.floor(to.getTime()/1000)},status:"succeeded"}};if(paginationToken)options.paginationToken=paginationToken;
+  const options:Record<string,unknown>={transactionDetails:"full",encoding:"jsonParsed",maxSupportedTransactionVersion:MAX_SUPPORTED_TX_VERSION,sortOrder:"asc",limit:1000,filters:{blockTime:{gte:Math.floor(from.getTime()/1000),lte:Math.floor(to.getTime()/1000)},status:"succeeded"}};if(paginationToken)options.paginationToken=paginationToken;
   const response=await fetch(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}`,{method:"POST",headers:{"content-type":"application/json"},signal:AbortSignal.timeout(45_000),body:JSON.stringify({jsonrpc:"2.0",id:`aegis-bundle-${page}`,method:"getTransactionsForAddress",params:[mint,options]})});
   if(!response.ok)throw new Error(`Helius bundle history HTTP ${response.status}`);const payload=await response.json() as {error?:{message?:string};result?:{data?:Array<Record<string,unknown>>;paginationToken?:string}};if(payload.error)throw new Error(payload.error.message??"Helius bundle history error");
   records.push(...(payload.result?.data??[]));paginationToken=payload.result?.paginationToken;if(!paginationToken)break;

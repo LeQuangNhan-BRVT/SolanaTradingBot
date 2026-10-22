@@ -1,3 +1,4 @@
+import { MAX_SUPPORTED_TX_VERSION } from "./solana";
 import { Connection, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import { z } from "zod";
 
@@ -89,7 +90,7 @@ export async function getWalletActivity(address: string, limit = 40) {
   const changes: WalletChange[] = [];
   for (let offset = 0; offset < signatures.length; offset += 20) {
     const batch = signatures.slice(offset, offset + 20);
-    const transactions = await rpc.getParsedTransactions(batch.map((item) => item.signature), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    const transactions = await rpc.getParsedTransactions(batch.map((item) => item.signature), { commitment: "confirmed", maxSupportedTransactionVersion:MAX_SUPPORTED_TX_VERSION });
     transactions.forEach((tx, i) => { if (tx) changes.push(extractWalletChange(batch[i].signature, tx, address)); });
   }
   return changes;

@@ -1,6 +1,9 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import type { MintInspection } from "./types";
 
+// Solana now emits version 1 transactions; RPC rejects them when a lower maximum is requested.
+export const MAX_SUPPORTED_TX_VERSION = 1;
+
 export class MintValidationError extends Error {}
 
 export async function inspectMint(address: string): Promise<MintInspection> {

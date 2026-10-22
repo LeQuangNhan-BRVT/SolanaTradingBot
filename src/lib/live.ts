@@ -1,3 +1,4 @@
+import { MAX_SUPPORTED_TX_VERSION } from "./solana";
 import { readFileSync } from "node:fs";
 import bs58 from "bs58";
 import { Connection, Keypair, VersionedTransaction } from "@solana/web3.js";
@@ -84,7 +85,7 @@ export async function buildJupiterSwap(quote: JupiterQuote, userPublicKey: strin
 
 // Reads the confirmed transaction and derives exact amounts from its balance changes. Null when not yet available.
 export async function fetchLiveExecution(connection: Connection, signature: string, wallet: string, tokenMint: string, side: LiveSide): Promise<LiveSwapExecution | null> {
-  const tx = await connection.getParsedTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  const tx = await connection.getParsedTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion:MAX_SUPPORTED_TX_VERSION });
   if (!tx) return null;
   const amounts = executionFromChange(extractWalletChange(signature, tx, wallet), side, tokenMint);
   return { signature, wallet, slot: tx.slot, blockTime: tx.blockTime ? new Date(tx.blockTime * 1000) : null, tokenMint, ...amounts, prioritizationFeeLamports: null, computeUnitLimit: null };

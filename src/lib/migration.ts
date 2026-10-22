@@ -1,3 +1,4 @@
+import { MAX_SUPPORTED_TX_VERSION } from "./solana";
 import { Connection, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -14,17 +15,22 @@ function addressOf(value: unknown): string | null {
   return null;
 }
 
-function matchesMigrateInstruction(instruction: unknown, mint: string, pool: string): boolean {
-  if (!instruction || typeof instruction !== "object" || !("accounts" in instruction) || !("programId" in instruction) || !("data" in instruction)) return false;
+// Decodes a Pump.fun -> PumpSwap migrate instruction (legacy and v2 layouts) into its mint and pool.
+export function decodeMigrateInstruction(instruction: unknown): { mint: string; pool: string } | null {
+  if (!instruction || typeof instruction !== "object" || !("accounts" in instruction) || !("programId" in instruction) || !("data" in instruction)) return null;
   const candidate = instruction as { accounts: unknown[]; programId: unknown; data: string };
-  if (addressOf(candidate.programId) !== PUMP_PROGRAM.toBase58() || typeof candidate.data !== "string") return false;
+  if (addressOf(candidate.programId) !== PUMP_PROGRAM.toBase58() || typeof candidate.data !== "string") return null;
   const data = Buffer.from(bs58.decode(candidate.data));
   const legacy = data.subarray(0, 8).equals(MIGRATE_DISCRIMINATOR);
   const v2 = data.subarray(0, 8).equals(MIGRATE_V2_DISCRIMINATOR);
-  if (!legacy && !v2) return false;
-  const ammIndex = legacy ? 8 : 9;
-  const poolIndex = legacy ? 9 : 10;
-  return addressOf(candidate.accounts[2]) === mint && addressOf(candidate.accounts[ammIndex]) === PUMP_AMM_PROGRAM && addressOf(candidate.accounts[poolIndex]) === pool;
+  if (!legacy && !v2) return null;
+  const mint = addressOf(candidate.accounts[2]), amm = addressOf(candidate.accounts[legacy ? 8 : 9]), pool = addressOf(candidate.accounts[legacy ? 9 : 10]);
+  return mint && pool && amm === PUMP_AMM_PROGRAM ? { mint, pool } : null;
+}
+
+function matchesMigrateInstruction(instruction: unknown, mint: string, pool: string): boolean {
+  const decoded = decodeMigrateInstruction(instruction);
+  return decoded !== null && decoded.mint === mint && decoded.pool === pool;
 }
 
 async function verifyWithHelius(mint: string, pool: string, pairCreatedAt: Date): Promise<MigrationInspection | null> {
@@ -33,7 +39,7 @@ async function verifyWithHelius(mint: string, pool: string, pairCreatedAt: Date)
   const center = Math.floor(pairCreatedAt.getTime() / 1000);
   const response = await fetch(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, {
     method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(30_000),
-    body: JSON.stringify({ jsonrpc: "2.0", id: "aegis-migration", method: "getTransactionsForAddress", params: [pool, { transactionDetails: "full", encoding: "jsonParsed", maxSupportedTransactionVersion: 0, sortOrder: "asc", limit: 1000, filters: { blockTime: { gte: center - 1800, lte: center + 1800 }, status: "succeeded" } }] }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: "aegis-migration", method: "getTransactionsForAddress", params: [pool, { transactionDetails: "full", encoding: "jsonParsed", maxSupportedTransactionVersion:MAX_SUPPORTED_TX_VERSION, sortOrder: "asc", limit: 1000, filters: { blockTime: { gte: center - 1800, lte: center + 1800 }, status: "succeeded" } }] }),
   });
   if (!response.ok) throw new Error(`Helius historical API HTTP ${response.status}`);
   const payload = await response.json() as { error?: { message?: string }; result?: { data?: Array<Record<string, unknown>> } };
@@ -76,7 +82,7 @@ export async function verifyPumpMigration(mintAddress: string, poolAddress: stri
 
   for (let offset = 0; offset < candidates.length; offset += 100) {
     const batch = candidates.slice(offset, offset + 100);
-    const transactions = await connection.getParsedTransactions(batch.map((item) => item.signature), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    const transactions = await connection.getParsedTransactions(batch.map((item) => item.signature), { commitment: "confirmed", maxSupportedTransactionVersion:MAX_SUPPORTED_TX_VERSION });
     for (let index = 0; index < transactions.length; index++) {
       const transaction = transactions[index];
       if (!transaction || transaction.meta?.err) continue;
