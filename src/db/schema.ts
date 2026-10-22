@@ -76,6 +76,20 @@ export const triggerOrders = pgTable("trigger_orders", {
   resultOrderId: uuid("result_order_id").references(() => orders.id), triggeredAt: timestamp("triggered_at", { withTimezone: true }), filledAt: timestamp("filled_at", { withTimezone: true }), ...timestamps,
 }, (table) => [index("trigger_orders_status_idx").on(table.status), index("trigger_orders_token_idx").on(table.tokenId), index("trigger_orders_oco_idx").on(table.ocoGroup)]);
 
+export const filterPresets = pgTable("filter_presets", {
+  id: uuid("id").defaultRandom().primaryKey(), name: text("name").notNull(), rules: jsonb("rules").$type<Record<string, unknown>>().notNull(),
+  enabled: boolean("enabled").notNull().default(true), autoPromote: boolean("auto_promote").notNull().default(true), ...timestamps,
+});
+
+// Discovery inbox: every Pump.fun migration lands here cheaply; only tokens matching a preset are promoted to the watchlist.
+export const discoveredTokens = pgTable("discovered_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(), mint: text("mint").notNull(), poolAddress: text("pool_address").notNull(), migrationSignature: text("migration_signature").notNull(),
+  slot: bigint("slot", { mode: "bigint" }).notNull(), migratedAt: timestamp("migrated_at", { withTimezone: true }).notNull(), status: text("status").notNull().default("pending"),
+  symbol: text("symbol"), name: text("name"), metrics: jsonb("metrics").$type<Record<string, unknown>>().notNull().default({}), evaluation: jsonb("evaluation").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  marketCheckedAt: timestamp("market_checked_at", { withTimezone: true }), top10CheckedAt: timestamp("top10_checked_at", { withTimezone: true }), bundleCheckedAt: timestamp("bundle_checked_at", { withTimezone: true }), feesCheckedAt: timestamp("fees_checked_at", { withTimezone: true }), flagsCheckedAt: timestamp("flags_checked_at", { withTimezone: true }),
+  matchedPresetId: uuid("matched_preset_id").references(() => filterPresets.id, { onDelete: "set null" }), promotedAt: timestamp("promoted_at", { withTimezone: true }), lastError: text("last_error"), ...timestamps,
+}, (table) => [uniqueIndex("discovered_tokens_mint_unique").on(table.mint), uniqueIndex("discovered_tokens_signature_unique").on(table.migrationSignature), index("discovered_tokens_status_idx").on(table.status, table.migratedAt)]);
+
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(), eventType: text("event_type").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), payload: jsonb("payload").$type<Record<string, unknown>>().notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [index("audit_entity_idx").on(table.entityType, table.entityId, table.createdAt)]);

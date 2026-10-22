@@ -1,8 +1,9 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDatabase, hasDatabase } from "./client";
-import { auditLogs, bundleAssessments, fills, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, triggerOrders, walletFundingEdges, wallets } from "./schema";
+import { auditLogs, bundleAssessments, fills, holderBalances, holderSnapshots, migrationEvents, orders, pools, positionMarks, positions, riskAssessments, runtimeSettings, signals, tokenCreators, tokens, trackedWallets, triggerOrders, walletFundingEdges, wallets, filterPresets, discoveredTokens } from "./schema";
 import { normalizeTags, type WatchAlertConfig, type WatchlistPatch } from "@/lib/watchlist";
 import { costPortion, TriggerRejectedError } from "@/lib/triggers";
+import { RISK_LIMITS, riskLimitsSchema, type RiskLimits } from "@/lib/risk-engine";
 import type { Candidate, MintInspection, RiskCheck } from "@/lib/types";
 import type { MarketInspection } from "@/lib/market";
 import type { MigrationInspection } from "@/lib/migration";
@@ -622,4 +623,108 @@ export async function getShadowPositionById(id: string) {
 export async function refreshTokenSupply(mint: string, supplyRaw: string) {
   if (!hasDatabase()) return;
   await getDatabase().update(tokens).set({ supplyRaw }).where(eq(tokens.mint, mint));
+}
+
+// ---------- Configurable hard gates ----------
+export async function getRiskLimits(): Promise<RiskLimits> {
+  const stored = await getRuntimeValue<Record<string, unknown>>("risk-limits").catch(() => null);
+  const parsed = riskLimitsSchema.safeParse({ ...RISK_LIMITS, ...(stored ?? {}) });
+  return parsed.success ? parsed.data : RISK_LIMITS;
+}
+
+export async function updateRiskLimits(limits: RiskLimits) {
+  const value = riskLimitsSchema.parse(limits);
+  await setRuntimeValue("risk-limits", value);
+  if (hasDatabase()) await getDatabase().insert(auditLogs).values({ eventType: "risk.limits.updated", entityType: "runtime_setting", entityId: "risk-limits", payload: value });
+  return value;
+}
+
+// ---------- Migration discovery ----------
+export type DiscoverySettings = { enabled: boolean; retentionHours: number; recheckMinutes: number; heliusDailyCredits: number };
+export const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = { enabled: false, retentionHours: 24, recheckMinutes: 5, heliusDailyCredits: Number(process.env.HELIUS_DAILY_CREDIT_BUDGET ?? 25_000) };
+
+export async function getDiscoverySettings(): Promise<DiscoverySettings> {
+  const stored = await getRuntimeValue<Partial<DiscoverySettings>>("discovery").catch(() => null);
+  return { ...DEFAULT_DISCOVERY_SETTINGS, ...(stored ?? {}) };
+}
+
+export async function updateDiscoverySettings(settings: DiscoverySettings) {
+  await setRuntimeValue("discovery", settings);
+  return settings;
+}
+
+export async function listFilterPresets() {
+  if (!hasDatabase()) return [];
+  return getDatabase().select().from(filterPresets).orderBy(filterPresets.createdAt);
+}
+
+export async function ensureDefaultPreset(preset: { name: string; rules: Record<string, unknown> }) {
+  if (!hasDatabase()) return null;
+  const [existing] = await getDatabase().select({ id: filterPresets.id }).from(filterPresets).limit(1);
+  if (existing) return null;
+  const [row] = await getDatabase().insert(filterPresets).values({ name: preset.name, rules: preset.rules }).returning();
+  return row;
+}
+
+export async function saveFilterPreset(input: { id?: string; name: string; rules: Record<string, unknown>; enabled: boolean; autoPromote: boolean }) {
+  if (!hasDatabase()) throw new Error("Database chưa cấu hình.");
+  const db = getDatabase(), values = { name: input.name, rules: input.rules, enabled: input.enabled, autoPromote: input.autoPromote, updatedAt: new Date() };
+  const [row] = input.id ? await db.update(filterPresets).set(values).where(eq(filterPresets.id, input.id)).returning() : await db.insert(filterPresets).values(values).returning();
+  return row ?? null;
+}
+
+export async function deleteFilterPreset(id: string) {
+  if (!hasDatabase()) return false;
+  return (await getDatabase().delete(filterPresets).where(eq(filterPresets.id, id)).returning({ id: filterPresets.id })).length > 0;
+}
+
+export async function insertDiscoveredTokens(rows: Array<{ mint: string; poolAddress: string; migrationSignature: string; slot: bigint; migratedAt: Date }>) {
+  if (!hasDatabase() || rows.length === 0) return 0;
+  return (await getDatabase().insert(discoveredTokens).values(rows).onConflictDoNothing().returning({ id: discoveredTokens.id })).length;
+}
+
+export type DiscoveredToken = typeof discoveredTokens.$inferSelect;
+
+// Pending tokens are re-checked while in the inbox; promoted ones keep being re-evaluated for 72h to flag those that stop matching.
+export async function listDiscoveredForRecheck(staleMinutes: number, limit: number) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select().from(discoveredTokens).where(and(sql`(${discoveredTokens.status} = 'pending' or (${discoveredTokens.status} = 'promoted' and ${discoveredTokens.promotedAt} > now() - interval '72 hours'))`, sql`(${discoveredTokens.marketCheckedAt} is null or ${discoveredTokens.marketCheckedAt} < now() - (${staleMinutes} * interval '1 minute'))`)).orderBy(sql`${discoveredTokens.marketCheckedAt} asc nulls first`, desc(discoveredTokens.migratedAt)).limit(limit);
+}
+
+export async function updateDiscoveredToken(id: string, patch: Partial<typeof discoveredTokens.$inferInsert>) {
+  if (!hasDatabase()) return;
+  await getDatabase().update(discoveredTokens).set({ ...patch, updatedAt: new Date() }).where(eq(discoveredTokens.id, id));
+}
+
+export async function getDiscoveredToken(mint: string) {
+  if (!hasDatabase()) return null;
+  const [row] = await getDatabase().select().from(discoveredTokens).where(eq(discoveredTokens.mint, mint)).limit(1);
+  return row ?? null;
+}
+
+export async function listDiscoveredTokens(options: { status?: string; limit?: number } = {}) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select().from(discoveredTokens).where(options.status ? eq(discoveredTokens.status, options.status) : undefined).orderBy(desc(discoveredTokens.migratedAt)).limit(options.limit ?? 200);
+}
+
+export async function getDiscoveryStats() {
+  if (!hasDatabase()) return { pending: 0, promoted: 0, last24h: 0 };
+  const [row] = await getDatabase().select({ pending: sql<number>`count(*) filter (where ${discoveredTokens.status} = 'pending')::int`, promoted: sql<number>`count(*) filter (where ${discoveredTokens.status} = 'promoted')::int`, last24h: sql<number>`count(*) filter (where ${discoveredTokens.migratedAt} > now() - interval '24 hours')::int` }).from(discoveredTokens);
+  return row ?? { pending: 0, promoted: 0, last24h: 0 };
+}
+
+// Retention only cleans the inbox: promoted tokens and the watchlist are never touched.
+export async function expireDiscoveredTokens(retentionHours: number) {
+  if (!hasDatabase()) return 0;
+  return (await getDatabase().delete(discoveredTokens).where(and(eq(discoveredTokens.status, "pending"), sql`${discoveredTokens.migratedAt} < now() - (${retentionHours} * interval '1 hour')`)).returning({ id: discoveredTokens.id })).length;
+}
+
+export async function setTokenTags(mint: string, update: (tags: string[]) => string[]) {
+  if (!hasDatabase()) return null;
+  const db = getDatabase();
+  const [token] = await db.select({ id: tokens.id, tags: tokens.watchTags }).from(tokens).where(eq(tokens.mint, mint)).limit(1);
+  if (!token) return null;
+  const next = normalizeTags(update(token.tags));
+  await db.update(tokens).set({ watchTags: next }).where(eq(tokens.id, token.id));
+  return next;
 }

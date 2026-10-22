@@ -85,6 +85,13 @@
       "when": 1792642208941,
       "tag": "0011_naive_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792652406093,
+      "tag": "0012_yummy_arachne",
+      "breakpoints": true
     }
   ]
 }

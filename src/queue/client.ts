@@ -11,6 +11,28 @@ function redisConnection() {
   return connection;
 }
 
+// Daily Helius credit budget shared by every history-based discovery check. Returns false (and reserves nothing) when exhausted.
+export async function reserveHeliusCredits(credits: number, dailyBudget: number) {
+  const redis = redisConnection(), key = `aegis:helius-credits:${new Date().toISOString().slice(0, 10)}`;
+  const used = await redis.incrby(key, credits);
+  if (used === credits) await redis.expire(key, 3 * 86_400);
+  if (used > dailyBudget) { await redis.decrby(key, credits); return false; }
+  return true;
+}
+
+// Corrects a reservation once the actual cost is known (Helius bills per transaction returned).
+export async function adjustHeliusCredits(delta: number) {
+  if (delta !== 0) await redisConnection().incrby(`aegis:helius-credits:${new Date().toISOString().slice(0, 10)}`, delta);
+}
+
+export async function heliusCreditsUsedToday() {
+  return Number(await redisConnection().get(`aegis:helius-credits:${new Date().toISOString().slice(0, 10)}`) ?? 0);
+}
+
+export async function scheduleDiscoveryCycle() {
+  return analysisQueue().add("discovery-cycle", {}, { jobId: "discovery-cycle", repeat: { every: 60_000 }, removeOnComplete: 20, removeOnFail: 100 });
+}
+
 // Best-effort mutual exclusion across worker jobs; returns null when another holder owns the lock.
 export async function withRedisLock<T>(key: string, ttlSeconds: number, run: () => Promise<T>): Promise<T | null> {
   const redis = redisConnection(), token = `${process.pid}:${Date.now()}:${Math.random()}`;
