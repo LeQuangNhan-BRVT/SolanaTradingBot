@@ -108,7 +108,7 @@ const presetTag = (name: string) => `loc-${name}`;
 export const NO_LONGER_MATCHING_TAG = "khong-con-dat";
 
 export async function promoteDiscovered(token: DiscoveredToken, presetName: string | null) {
-  await assessAndSaveCandidate(token.mint, { migration: { signature: token.migrationSignature, slot: token.slot, blockTime: token.migratedAt, poolAddress: token.poolAddress, verified: true } });
+  await assessAndSaveCandidate(token.mint, { migration: { signature: token.migrationSignature, slot: token.slot, blockTime: token.migratedAt, poolAddress: token.poolAddress, verified: true }, skipBundleAnalysis: true });
   await setTokenTags(token.mint, (tags) => [...tags, "auto-migrated", ...(presetName ? [presetTag(presetName)] : ["thu-cong"])]);
 }
 

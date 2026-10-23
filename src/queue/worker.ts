@@ -3,7 +3,7 @@ import { Worker } from "bullmq";
 import IORedis from "ioredis";
 import { ANALYSIS_QUEUE, requestExitCheck, requestTriggerExecute, scheduleDiscoveryCycle, scheduleLiveSafetyJobs, withRedisLock, type DeepAnalysisJob } from "./client";
 import { inspectMarket } from "../lib/market";
-import { getCandidateDetail, getRiskLimits, getWatchAlertConfig, isTokenArchived, refreshCandidateMarket, refreshTokenSupply, saveBundleAssessment, saveFinalRiskAssessment, saveHolderGraph } from "../db/repository";
+import { getCandidateDetail, getDiscoveredToken, getRiskLimits, getWatchAlertConfig, isTokenArchived, refreshCandidateMarket, refreshTokenSupply, saveBundleAssessment, saveFinalRiskAssessment, saveHolderGraph } from "../db/repository";
 import { evaluateWatchAlerts } from "../lib/watchlist";
 import { inspectHolderGraph } from "../lib/graph";
 import { inspectBundle } from "../lib/bundle";
@@ -56,7 +56,10 @@ const worker = new Worker(ANALYSIS_QUEUE, async (job) => {
     bundleCoverage = bundle.coveredTransactions;
   } else {
     const current = await getCandidateDetail(data.mint);
-    bundlePct = current?.bundle && !current.bundle.truncated ? Number(current.bundle.suspectedBundlePct) : null;
+    // Without a full bundle analysis, fall back to the launch bundle discovery measured; none at all stays unknown (fail-closed).
+    const discovered = current?.bundle ? null : await getDiscoveredToken(data.mint);
+    const launchBundle = discovered?.bundleCheckedAt ? (discovered.metrics as Record<string, unknown>).bundlePct : null;
+    bundlePct = current?.bundle && !current.bundle.truncated ? Number(current.bundle.suspectedBundlePct) : typeof launchBundle === "number" ? launchBundle : null;
   }
   const detail = await getCandidateDetail(data.mint);
   if (!detail) throw new Error("Token không còn tồn tại.");

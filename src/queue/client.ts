@@ -73,11 +73,14 @@ export async function unscheduleTokenJobs(mint: string) {
 
 export type DeepAnalysisJob = { mint: string; tokenProgram: string; mintAuthority: string | null; freezeAuthority: string | null; poolAddress: string | null; creator: { creator: string; user: string; feePayer: string; blockTime: string }; migration: { blockTime: string } | null; includeBundle: boolean };
 
-export async function scheduleDeepAnalysis(data: Omit<DeepAnalysisJob, "includeBundle">) {
+// The full bundle analysis (funding graph + launch history) runs only for CAs added by hand; discovery already
+// measured the launch bundle before promoting, so promoted tokens start with holder analysis only.
+export async function scheduleDeepAnalysis(data: Omit<DeepAnalysisJob, "includeBundle">, options: { includeBundle?: boolean } = {}) {
   const queue = analysisQueue();
-  const options = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 10_000 } };
-  const initial = await queue.add("holder-bundle-analysis", { ...data, includeBundle: true }, { ...options, jobId: `deep-${data.mint}-${Date.now()}` });
-  await queue.add("holder-analysis", { ...data, includeBundle: false }, { ...options, jobId: `holders-${data.mint}`, repeat: { every: 900_000 } });
+  const jobOptions = { removeOnComplete: 100, removeOnFail: 500, attempts: 3, backoff: { type: "exponential" as const, delay: 10_000 } };
+  const includeBundle = options.includeBundle ?? true;
+  const initial = await queue.add(includeBundle ? "holder-bundle-analysis" : "holder-analysis", { ...data, includeBundle }, { ...jobOptions, jobId: `deep-${data.mint}-${Date.now()}` });
+  await queue.add("holder-analysis", { ...data, includeBundle: false }, { ...jobOptions, jobId: `holders-${data.mint}`, repeat: { every: 900_000 } });
   await scheduleShadowScan();
   return initial;
 }
