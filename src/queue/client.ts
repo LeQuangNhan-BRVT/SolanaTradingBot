@@ -41,6 +41,12 @@ export async function withRedisLock<T>(key: string, ttlSeconds: number, run: () 
   finally { await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0", 1, `aegis:lock:${key}`, token); }
 }
 
+// Lets short-lived processes (scripts, tests) exit once they are done with the queue.
+export async function closeQueueConnections() {
+  await queue?.close(); await connection?.quit();
+  queue = undefined; connection = undefined;
+}
+
 export function analysisQueue() { queue ??= new Queue(ANALYSIS_QUEUE, { connection: redisConnection() }); return queue; }
 
 export async function getQueueHealth() {

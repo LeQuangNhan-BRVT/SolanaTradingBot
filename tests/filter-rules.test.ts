@@ -31,12 +31,13 @@ test("three-valued AND/OR with nested groups", () => {
 test("a cheap failure decides the default preset without expensive data", () => {
   const result = evaluateGroup(DEFAULT_PRESET.rules, { volume24hUsd: 5_000 });
   assert.equal(result.outcome, "fail");
-  assert.equal(evaluateGroup(DEFAULT_PRESET.rules, { volume24hUsd: 50_000, top10Pct: 20, bundlePct: 5, totalFeesSol: { lowerBound: 11 } }).outcome, "pass");
+  assert.equal(evaluateGroup(DEFAULT_PRESET.rules, { volume24hUsd: 50_000, top10Pct: 20, bundlePct: 5 }).outcome, "pass");
 });
 
 test("fields used and fee stop target", () => {
-  assert.deepEqual([...fieldsUsed(DEFAULT_PRESET.rules)].sort(), ["bundlePct", "top10Pct", "totalFeesSol", "volume24hUsd"]);
-  assert.equal(feeStopTarget(DEFAULT_PRESET.rules), 10);
+  assert.deepEqual([...fieldsUsed(DEFAULT_PRESET.rules)].sort(), ["bundlePct", "top10Pct", "volume24hUsd"]);
+  assert.equal(feeStopTarget({ match: "all", rules: [{ field: "totalFeesSol", op: "gt", value: 10 }] }), 10);
+  assert.equal(feeStopTarget(DEFAULT_PRESET.rules), null);
   assert.equal(feeStopTarget({ match: "all", rules: [{ field: "volume24hUsd", op: "gte", value: 1 }] }), null);
 });
 

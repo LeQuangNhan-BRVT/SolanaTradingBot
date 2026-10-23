@@ -19,16 +19,18 @@ Candidates are added manually by submitting a mint address (CA) on the dashboard
 `/discovery` watches every Pump.fun → PumpSwap migration and filters it with your own presets. Enable it on that page (off by default); the worker runs a cycle every minute.
 
 - **Source.** All migrations are executed by the Pump.fun migration account `39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg`. The worker reads its new transactions (sequentially, to stay under free-tier RPC limits), decodes `migrate`/`migrateV2` and records mint, pool, slot and time in the **discovery inbox**. The observed migration doubles as verified migration evidence, so promotion skips the migration search.
-- **Presets.** A rule builder (field + operator + value, AND/OR, nested groups up to two levels) stored as schema-validated JSON — never evaluated as code. The default preset "Lọc sơ bộ" is: top 10 holders < 30%, launch bundle < 15%, volume 24h ≥ 20K USD, total fees > 10 SOL.
+- **Presets.** A rule builder (field + operator + value, AND/OR, nested groups up to two levels) stored as schema-validated JSON — never evaluated as code. The default preset "Lọc sơ bộ" is: top 10 holders < 30%, launch bundle < 15%, volume 24h ≥ 20K USD.
 - **Three-valued evaluation, cheap to expensive.** A rule is pass, fail or unknown. Checks run only while some preset still needs them to reach a verdict:
   1. DexScreener `/tokens/v1` (free, 30 tokens per call): volume (post-migration PumpSwap pair), liquidity, market cap, price change, buys/sells, boosts, socials.
   2. RPC `getTokenLargestAccounts`: top 10 holders, excluding the pool vault and bonding curve.
-  3. Helius history (budgeted): launch bundle = supply bought in the creation slot plus early slots with several buyers (it measures acquisition at launch, not current holdings); total fees = network + priority fees + Jito tips, summed until the target is exceeded or 5 pages.
+  3. Helius history (budgeted): launch bundle = supply bought in the creation slot plus early slots with several buyers (it measures acquisition at launch, not current holdings). An optional "total fees" field (network + priority fees + Jito tips) exists, but active tokens need tens of thousands of transactions to reach typical thresholds — thousands of credits per token — so it is not in the default preset.
+  Stages run strictly in order: a costlier check waits while a cheaper metric a preset needs is still missing.
   4. DexScreener `/orders/v1` for display flags: **DEX PAID** (approved `tokenProfile`) and **CTO** (approved `communityTakeover`).
 - **Budgets.** Per-cycle caps and a daily Helius credit budget (`HELIUS_DAILY_CREDIT_BUDGET`, default 25,000, editable on the page). When exhausted, remaining checks stay unknown and are retried later.
+- **Removal.** A pending token that fails every enabled preset is deleted from the inbox immediately. Tokens with any "unknown" verdict (missing data, caps or budget) stay and are re-checked until the retention period ends.
 - **Promotion.** A pending token that passes a preset with auto-promote enabled is verified like a manually added CA and tagged `auto-migrated` + `loc-<preset>`; auto-trade stays off. Unknown never promotes. You can also add any inbox token manually.
-- **Re-evaluation.** Promoted tokens keep being re-checked for 72h: a token that fails its preset is tagged `khong-con-dat` and an alert is sent; nothing is removed from the watchlist.
-- **Retention.** Pending tokens are deleted from the inbox after the retention period (default 24h). The watchlist is never touched.
+- **Re-evaluation.** Promoted tokens keep being re-checked for 72h. A token that fails the preset that promoted it is tagged `khong-con-dat`, **archived** (reversible: restore re-verifies the CA) and an alert is sent. A token with an open position is kept and only tagged. Manually promoted tokens are never auto-archived.
+- **Retention.** Pending tokens still unknown are deleted from the inbox after the retention period (default 24h).
 - Bundle and fee figures are the app's own on-chain measurements and differ from screeners such as GMGN; calibrate thresholds from the measured values shown in the inbox.
 
 ### Configurable hard gates

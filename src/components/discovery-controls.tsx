@@ -24,7 +24,7 @@ export function DiscoverySettingsForm({ initial }: { initial: Settings }) {
   return <form className="watch-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
     <label className="watch-toggle"><input type="checkbox" checked={values.enabled} onChange={(event) => { const next = { ...values, enabled: event.target.checked }; setValues(next); void save(next); }}/> Tự động phát hiện token migrate từ Pump.fun (worker chạy mỗi phút)</label>
     <div className="watch-form-grid">
-      <label>Giữ token không đạt (giờ)<input inputMode="numeric" value={values.retentionHours} onChange={(event) => setValues({ ...values, retentionHours: event.target.value })}/></label>
+      <label>Giữ token chưa rõ tối đa (giờ)<input inputMode="numeric" value={values.retentionHours} onChange={(event) => setValues({ ...values, retentionHours: event.target.value })}/></label>
       <label>Lọc lại mỗi (phút)<input inputMode="numeric" value={values.recheckMinutes} onChange={(event) => setValues({ ...values, recheckMinutes: event.target.value })}/></label>
       <label>Trần credit Helius/ngày<input inputMode="numeric" value={values.heliusDailyCredits} onChange={(event) => setValues({ ...values, heliusDailyCredits: event.target.value })}/></label>
     </div>

@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
-import { ensureDefaultPreset, expireDiscoveredTokens, getDiscoverySettings, getRuntimeValue, insertDiscoveredTokens, listDiscoveredForRecheck, listFilterPresets, setRuntimeValue, setTokenTags, updateDiscoveredToken, type DiscoveredToken } from "@/db/repository";
-import { adjustHeliusCredits, reserveHeliusCredits } from "@/queue/client";
+import { deleteDiscoveredToken, ensureDefaultPreset, updateWatchlist, WatchlistError, expireDiscoveredTokens, getDiscoverySettings, getRuntimeValue, insertDiscoveredTokens, listDiscoveredForRecheck, listFilterPresets, setRuntimeValue, setTokenTags, updateDiscoveredToken, type DiscoveredToken } from "@/db/repository";
+import { adjustHeliusCredits, reserveHeliusCredits, unscheduleTokenJobs } from "@/queue/client";
 import { assessAndSaveCandidate } from "./candidate-assessment";
 import { fetchDexFlags, fetchLaunchBundle, fetchMarkets, fetchTop10Pct, fetchTotalFees, rpcConnection, type MarketMetrics } from "./discovery-metrics";
 import { DEFAULT_PRESET, evaluateGroup, feeStopTarget, fieldsUsed, filterGroupSchema, type FilterField, type FilterGroup, type Metrics, type Outcome, type RuleResult } from "./filter-rules";
@@ -65,6 +65,9 @@ export async function evaluateDiscovered(token: DiscoveredToken, presets: Preset
   const metrics: StoredMetrics = { ...(token.metrics as StoredMetrics), ageMinutes: Math.round(minutesSince(token.migratedAt)) };
   const patch: Partial<DiscoveredToken> = {};
   let evaluations = evaluateAll(presets, metrics);
+  // Stages run strictly in order: when a cheaper metric a preset needs is still missing (cap or budget reached),
+  // costlier stages wait for a later cycle instead of spending on a token the cheaper check might reject.
+  let blocked = false;
 
   if (needs(presets, evaluations, "top10Pct") && minutesSince(token.top10CheckedAt) > 30 && budget.top10 > 0) {
     budget.top10--;
@@ -72,8 +75,9 @@ export async function evaluateDiscovered(token: DiscoveredToken, presets: Preset
     metrics.top10Pct = top10.top10Pct; metrics.supplyRaw = top10.supplyRaw; patch.top10CheckedAt = new Date();
     evaluations = evaluateAll(presets, metrics);
   }
+  if (needs(presets, evaluations, "top10Pct") && (metrics.top10Pct === undefined || metrics.top10Pct === null)) blocked = true;
   // Launch bundles never change, so they are measured once.
-  if (needs(presets, evaluations, "bundlePct") && !token.bundleCheckedAt && metrics.supplyRaw && budget.bundle > 0 && await providers.reserveCredits(20)) {
+  if (!blocked && needs(presets, evaluations, "bundlePct") && !token.bundleCheckedAt && metrics.supplyRaw && budget.bundle > 0 && await providers.reserveCredits(20)) {
     budget.bundle--;
     const bundle = await providers.bundle(token.mint, metrics.supplyRaw, token.poolAddress);
     await providers.adjustCredits(bundle.credits - 20);
@@ -81,8 +85,9 @@ export async function evaluateDiscovered(token: DiscoveredToken, presets: Preset
     evaluations = evaluateAll(presets, metrics);
   }
   // Fees only grow: once a lower bound clears the target it stays cleared; otherwise re-measure at most hourly.
+  if (needs(presets, evaluations, "bundlePct") && (metrics.bundlePct === undefined || metrics.bundlePct === null)) blocked = true;
   const stopAt = Math.max(0, ...presets.map((preset) => feeStopTarget(preset.rules) ?? 0));
-  if (needs(presets, evaluations, "totalFeesSol") && minutesSince(token.feesCheckedAt) > 60 && budget.fees > 0 && await providers.reserveCredits(FEE_PAGE_CAP * 100)) {
+  if (!blocked && needs(presets, evaluations, "totalFeesSol") && minutesSince(token.feesCheckedAt) > 60 && budget.fees > 0 && await providers.reserveCredits(FEE_PAGE_CAP * 100)) {
     budget.fees--;
     const fees = await providers.fees(token.mint, stopAt, FEE_PAGE_CAP);
     await providers.adjustCredits(fees.credits - FEE_PAGE_CAP * 100);
@@ -107,6 +112,15 @@ export async function promoteDiscovered(token: DiscoveredToken, presetName: stri
   await setTokenTags(token.mint, (tags) => [...tags, "auto-migrated", ...(presetName ? [presetTag(presetName)] : ["thu-cong"])]);
 }
 
+// Promoted tokens that stop matching are archived (reversible); a token with an open position is kept and only tagged.
+async function archiveNoLongerMatching(mint: string) {
+  await setTokenTags(mint, (tags) => [...tags, NO_LONGER_MATCHING_TAG]);
+  try { await updateWatchlist(mint, { archived: true }); }
+  catch (error) { if (error instanceof WatchlistError && error.status === 409) return false; throw error; }
+  await unscheduleTokenJobs(mint).catch((error) => console.error("Unable to unschedule archived token", error));
+  return true;
+}
+
 export function parsePresets(rows: Awaited<ReturnType<typeof listFilterPresets>>): Preset[] {
   return rows.filter((row) => row.enabled).flatMap((row) => { const parsed = filterGroupSchema.safeParse(row.rules); return parsed.success ? [{ id: row.id, name: row.name, rules: parsed.data, autoPromote: row.autoPromote }] : []; });
 }
@@ -122,7 +136,7 @@ export async function runDiscoveryCycle(options: { providers?: DiscoveryProvider
   const batch = await listDiscoveredForRecheck(settings.recheckMinutes, options.batchSize ?? 90);
   const markets = batch.length ? await providers.markets(batch.map((token) => token.mint)).catch(() => new Map<string, MarketMetrics>()) : new Map<string, MarketMetrics>();
   const budget: CycleBudget = options.budget ?? { top10: 15, bundle: 5, fees: 3, flags: 10 };
-  const summary = { checked: 0, promoted: 0, noLongerMatching: 0, errors: 0 };
+  const summary = { checked: 0, promoted: 0, removed: 0, noLongerMatching: 0, archived: 0, errors: 0 };
 
   for (const token of batch) {
     const market = markets.get(token.mint);
@@ -138,11 +152,20 @@ export async function runDiscoveryCycle(options: { providers?: DiscoveryProvider
         Object.assign(patch, { status: "promoted", matchedPresetId: result.matched.id, promotedAt: new Date() });
         summary.promoted++;
         void sendAlertOnce(`discovery-promoted:${token.mint}`, 24 * 60 * 60_000, { type: "discovery.promoted", severity: "info", title: `Khám phá: ${market?.symbol ?? token.mint.slice(0, 6)} vào watchlist`, message: `Đạt preset "${result.matched.name}".`, data: { mint: token.mint, presetId: result.matched.id } });
+      } else if (token.status === "pending" && presets.length > 0 && result.evaluations.every((evaluation) => evaluation.outcome === "fail")) {
+        // A token that fails every enabled preset leaves the inbox at once; tokens with any "unknown" verdict stay to be re-checked.
+        await deleteDiscoveredToken(token.id);
+        summary.removed++;
+        continue;
       } else if (token.status === "promoted") {
-        // Re-evaluation of promoted tokens only tags and alerts; it never removes anything from the watchlist.
         const own = result.evaluations.find((evaluation) => evaluation.presetId === token.matchedPresetId);
-        if (own?.outcome === "fail") { summary.noLongerMatching++; await setTokenTags(token.mint, (tags) => [...tags, NO_LONGER_MATCHING_TAG]); void sendAlertOnce(`discovery-unmatched:${token.mint}`, 24 * 60 * 60_000, { type: "discovery.unmatched", severity: "warning", title: `${market?.symbol ?? token.mint.slice(0, 6)} không còn đạt "${own.name}"`, message: own.results.filter((item) => item.outcome === "fail").map((item) => item.field).join(", "), data: { mint: token.mint } }); }
-        else if (own?.outcome === "pass") await setTokenTags(token.mint, (tags) => tags.filter((tag) => tag !== NO_LONGER_MATCHING_TAG));
+        if (own?.outcome === "fail") {
+          summary.noLongerMatching++;
+          const archived = await archiveNoLongerMatching(token.mint);
+          if (archived) { patch.status = "archived"; summary.archived++; }
+          const reasons = own.results.filter((item) => item.outcome === "fail").map((item) => item.field).join(", ");
+          void sendAlertOnce(`discovery-unmatched:${token.mint}`, 24 * 60 * 60_000, { type: "discovery.unmatched", severity: "warning", title: `${market?.symbol ?? token.mint.slice(0, 6)} không còn đạt "${own.name}"`, message: archived ? `Đã tự lưu trữ khỏi watchlist (${reasons}).` : `Giữ lại vì đang có vị thế mở (${reasons}).`, data: { mint: token.mint, archived } });
+        } else if (own?.outcome === "pass") await setTokenTags(token.mint, (tags) => tags.filter((tag) => tag !== NO_LONGER_MATCHING_TAG));
       }
       await updateDiscoveredToken(token.id, patch);
     } catch (error) {

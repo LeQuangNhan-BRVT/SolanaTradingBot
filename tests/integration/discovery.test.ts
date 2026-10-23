@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { config } from "dotenv";
@@ -6,8 +6,11 @@ import { eq, inArray, like } from "drizzle-orm";
 config({ path: ".env.local" });
 import { getDatabase } from "../../src/db/client";
 import { expireDiscoveredTokens, insertDiscoveredTokens, saveFilterPreset } from "../../src/db/repository";
-import { discoveredTokens, filterPresets } from "../../src/db/schema";
+import { discoveredTokens, filterPresets, positions, tokens } from "../../src/db/schema";
 import { runDiscoveryCycle, type DiscoveryProviders } from "../../src/lib/discovery";
+import { closeQueueConnections } from "../../src/queue/client";
+
+after(() => closeQueueConnections());
 import type { MarketMetrics } from "../../src/lib/discovery-metrics";
 
 const market = (volume: number): MarketMetrics => ({ symbol: "T", name: "Test", pairAddress: "p", dexId: "pumpswap", volume24hUsd: volume, liquidityUsd: 30_000, mcapUsd: 500_000, priceUsd: "0.0005", priceChange1h: 1, priceChange24h: 2, buys24h: 10, sells24h: 5, buySellRatio24h: 2, boosts: 0, hasSocials: true });
@@ -54,8 +57,8 @@ test("staged evaluation skips expensive checks once a cheap rule decides, and ne
     assert.equal(mine?.outcome, "unknown");
     assert.equal(row.status, "pending");
     assert.equal((row.metrics as Record<string, unknown>).dexPaid, true);
-    const [lowRow] = await db.select().from(discoveredTokens).where(eq(discoveredTokens.mint, low));
-    assert.equal((lowRow.evaluation as Array<{ presetId: string; outcome: string }>).find((item) => item.presetId === preset!.id)?.outcome, "fail");
+    // Failing every enabled preset removes the token from the inbox immediately.
+    assert.equal((await db.select().from(discoveredTokens).where(eq(discoveredTokens.mint, low))).length, 0);
   } finally { await cleanup(prefix, preset ? [preset.id] : []); }
 });
 
@@ -81,4 +84,43 @@ test("retention only deletes stale pending inbox rows", async () => {
     assert.equal(remaining.includes(old), false);
     assert.ok(remaining.includes(oldPromoted) && remaining.includes(fresh));
   } finally { await cleanup(prefix, []); }
+});
+
+test("promoted tokens that stop matching are archived, unless a position is open", async () => {
+  const prefix = `test-disc-${randomUUID().slice(0, 6)}-`, db = getDatabase();
+  const preset = await saveFilterPreset({ name: `Archive ${prefix}`, rules: { match: "all", rules: [{ field: "volume24hUsd", op: "gte", value: 20_000 }] }, enabled: true, autoPromote: false });
+  const [free, held] = await seed(prefix, 2);
+  const tokenIds: string[] = [];
+  try {
+    for (const mint of [free, held]) {
+      const [token] = await db.insert(tokens).values({ mint, symbol: "ARC", name: "Archive test", status: "monitoring", watchTags: ["auto-migrated"] }).returning({ id: tokens.id });
+      tokenIds.push(token.id);
+      await db.update(discoveredTokens).set({ status: "promoted", promotedAt: new Date(), matchedPresetId: preset!.id }).where(eq(discoveredTokens.mint, mint));
+    }
+    await db.insert(positions).values({ tokenId: tokenIds[1], mode: "shadow", status: "open", origin: "manual", quantityRaw: "1", costLamports: "1" });
+    await runDiscoveryCycle({ providers: providers({ [free]: 1_000, [held]: 1_000 }, {}), poll: false });
+    const [freeToken] = await db.select().from(tokens).where(eq(tokens.id, tokenIds[0]));
+    const [heldToken] = await db.select().from(tokens).where(eq(tokens.id, tokenIds[1]));
+    assert.ok(freeToken.archivedAt);
+    assert.equal((await db.select().from(discoveredTokens).where(eq(discoveredTokens.mint, free)))[0].status, "archived");
+    assert.equal(heldToken.archivedAt, null);
+    assert.ok(heldToken.watchTags.includes("khong-con-dat"));
+  } finally {
+    if (tokenIds.length) { await db.delete(positions).where(inArray(positions.tokenId, tokenIds)); }
+    await cleanup(prefix, preset ? [preset.id] : []);
+    if (tokenIds.length) await db.delete(tokens).where(inArray(tokens.id, tokenIds));
+  }
+});
+
+test("expensive stages wait while a cheaper metric is still missing", async () => {
+  const prefix = `test-disc-${randomUUID().slice(0, 6)}-`;
+  const preset = await saveFilterPreset({ name: `Order ${prefix}`, rules: { match: "all", rules: [{ field: "volume24hUsd", op: "gte", value: 1 }, { field: "top10Pct", op: "lt", value: 90 }, { field: "bundlePct", op: "lt", value: 15 }, { field: "totalFeesSol", op: "gt", value: 10 }] }, enabled: true, autoPromote: false });
+  const [mint] = await seed(prefix, 1);
+  try {
+    const calls: Record<string, string[]> = {};
+    // No top-10 checks left this cycle: neither bundle nor fees may run for this token.
+    await runDiscoveryCycle({ providers: providers({ [mint]: 50_000 }, calls), poll: false, budget: { top10: 0, bundle: 5, fees: 3, flags: 10 } });
+    assert.equal(calls.bundle?.includes(mint) ?? false, false);
+    assert.equal(calls.fees?.includes(mint) ?? false, false);
+  } finally { await cleanup(prefix, preset ? [preset.id] : []); }
 });

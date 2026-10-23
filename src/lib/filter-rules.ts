@@ -17,7 +17,8 @@ export const FILTER_FIELDS = {
   cto: { label: "Đã CTO", kind: "boolean", cost: "cheap" },
   top10Pct: { label: "Top 10 holder (%)", kind: "number", cost: "medium" },
   bundlePct: { label: "Bundle lúc launch (%)", kind: "number", cost: "expensive" },
-  totalFeesSol: { label: "Total fees (SOL)", kind: "number", cost: "expensive" },
+  // Summing fees needs tens of thousands of transactions per active token: thousands of Helius credits each.
+  totalFeesSol: { label: "Total fees (SOL) — tốn nhiều credit", kind: "number", cost: "expensive" },
 } as const;
 export type FilterField = keyof typeof FILTER_FIELDS;
 export type FieldCost = "cheap" | "medium" | "expensive";
@@ -95,13 +96,12 @@ export function describeRule(rule: FilterRule) {
   return rule.op === "between" ? `${field.label} ${rule.value}–${rule.value2}` : `${field.label} ${OPERATORS[rule.op]} ${rule.value}`;
 }
 
-// The user's prefilter, seeded as the default preset.
+// The user's prefilter, seeded as the default preset. Total fees was dropped: too costly to measure on the free Helius plan.
 export const DEFAULT_PRESET: { name: string; rules: FilterGroup } = {
   name: "Lọc sơ bộ",
   rules: { match: "all", rules: [
     { field: "top10Pct", op: "lt", value: 30 },
     { field: "bundlePct", op: "lt", value: 15 },
     { field: "volume24hUsd", op: "gte", value: 20_000 },
-    { field: "totalFeesSol", op: "gt", value: 10 },
   ] },
 };

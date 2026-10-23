@@ -728,3 +728,8 @@ export async function setTokenTags(mint: string, update: (tags: string[]) => str
   await db.update(tokens).set({ watchTags: next }).where(eq(tokens.id, token.id));
   return next;
 }
+
+export async function deleteDiscoveredToken(id: string) {
+  if (!hasDatabase()) return;
+  await getDatabase().delete(discoveredTokens).where(eq(discoveredTokens.id, id));
+}
