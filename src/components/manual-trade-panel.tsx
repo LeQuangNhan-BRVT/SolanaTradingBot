@@ -76,7 +76,7 @@ export function ManualTradePanel({ mint, symbol, decimals, enabled, disabledReas
       <div className="watch-tabs"><button type="button" className={`tab-button${side === "buy" ? " active" : ""}`} onClick={() => { setSide("buy"); setAmount("0.05"); }}>Mua</button><button type="button" className={`tab-button${side === "sell" ? " active" : ""}`} onClick={() => { setSide("sell"); setAmount("100"); }}>Bán</button></div>
       <div className="watch-form-grid">
         <label>{side === "buy" ? "Số SOL chi" : "% số token trong ví"}<input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)}/></label>
-        {side === "sell" && <div className="pct-buttons">{["25", "50", "100"].map((pct) => <button type="button" key={pct} className={`tab-button${amount === pct ? " active" : ""}`} onClick={() => setAmount(pct)}>{pct}%</button>)}</div>}
+        <div className="pct-buttons" role="group" aria-label={side === "buy" ? "Số SOL nhanh" : "Tỷ lệ bán nhanh"}>{(side === "buy" ? ["0.05", "0.1", "0.5", "1"] : ["25", "50", "100"]).map((value) => <button type="button" key={value} aria-pressed={amount === value} className={`tab-button${amount === value ? " active" : ""}`} onClick={() => setAmount(value)}>{side === "buy" ? `${value} SOL` : `${value}%`}</button>)}</div>
         <label>Slippage tối đa (%)<input inputMode="decimal" value={slippagePct} onChange={(event) => setSlippagePct(event.target.value)}/></label>
       </div>
       {error && <p className="form-message">{error}</p>}

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { Activity, Crosshair, Eye, HeartPulse, ListOrdered, Pause, Plus, Radar, Search, Settings, Shield, ShoppingCart, Target, Wallet } from "lucide-react";
 import { matchesQuery } from "@/lib/table-tools";
 import { useFeedback } from "./feedback";
+import { useTradeDrawer } from "./trade-drawer";
 
 type SearchResult = {
   query: string; isAddress: boolean;
@@ -33,6 +34,7 @@ async function post(url: string, body?: unknown) {
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const router = useRouter();
   const { toast } = useFeedback();
+  const { openTrade } = useTradeDrawer();
   const dialog = useRef<HTMLDialogElement>(null), input = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(""), [result, setResult] = useState<SearchResult | null>(null), [active, setActive] = useState(0), [loading, setLoading] = useState(false);
 
@@ -66,7 +68,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       result.tokens.forEach((token) => list.push({ id: `t-${token.mint}`, group: "Token", title: token.symbol, detail: `${token.name} · ${token.archivedAt ? "đã lưu trữ" : `watchlist, ${STATUS_LABEL[token.status] ?? token.status}`} · ${short(token.mint)}`, Icon: Crosshair, run: () => go(`/tokens/${token.mint}`) }));
       const first = result.tokens.find((token) => !token.archivedAt);
       if (first) {
-        list.push({ id: `buy-${first.mint}`, group: "Thao tác", title: `Mua / bán ${first.symbol}`, detail: "Mở panel giao dịch từ ví trình duyệt", Icon: ShoppingCart, run: () => go(`/tokens/${first.mint}#manual-trade`) });
+        list.push({ id: `buy-${first.mint}`, group: "Thao tác", title: `Mua / bán ${first.symbol}`, detail: "Mở panel giao dịch từ ví trình duyệt", Icon: ShoppingCart, run: () => { onClose(); openTrade(first.mint); } });
         list.push({ id: `tp-${first.mint}`, group: "Thao tác", title: `Đặt TP/SL cho ${first.symbol}`, detail: "Lệnh điều kiện theo market cap", Icon: Target, run: () => go(`/tokens/${first.mint}#triggers`) });
       }
       result.positions.forEach((position) => list.push({ id: `p-${position.id}`, group: "Vị thế", title: position.symbol, detail: `Vị thế ${position.mode}${position.origin === "manual" ? " · thủ công" : ""} đang mở`, Icon: Wallet, run: () => go(`/tokens/${position.mint}`) }));
@@ -80,7 +82,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     PAGES.filter((page) => matchesQuery(trimmed, [page.label])).forEach((page) => list.push({ id: `page-${page.href}`, group: "Đi tới", title: page.label, detail: page.href, Icon: page.Icon, run: () => go(page.href) }));
     if (matchesQuery(trimmed, ["pause entries tạm dừng vào lệnh"])) list.push({ id: "pause", group: "Hệ thống", title: "Pause entries", detail: "Dừng bot vào lệnh mới; thoát lệnh vẫn chạy", Icon: Pause, run: act(() => post("/api/settings/trading", { entriesPaused: true, reason: "Paused from command palette" }), "Đã pause entry.") });
     return list;
-  }, [result, query, go, act]);
+  }, [result, query, go, act, onClose, openTrade]);
 
   useEffect(() => { setActive(0); }, [items.length]);
   const onKeyDown = (event: React.KeyboardEvent) => {

@@ -83,7 +83,7 @@ export function DiscoveryTable({ rows }: { rows: DiscoveredRow[] }) {
     const m = row.metrics;
     return <tr key={row.mint}>
       <td><strong>{row.symbol ?? "?"}</strong> <a className="external" href={`https://dexscreener.com/solana/${row.mint}`} target="_blank" rel="noreferrer">{row.mint.slice(0, 4)}…{row.mint.slice(-4)} <ExternalLink size={10}/></a></td>
-      <td>{ago(row.migratedAt)}</td><td>{formatMcap(typeof m.mcapUsd === "number" ? m.mcapUsd : null)}</td><td>{usd(m.volume24hUsd)}</td><td>{usd(m.liquidityUsd)}</td>
+      <td suppressHydrationWarning>{ago(row.migratedAt)}</td><td>{formatMcap(typeof m.mcapUsd === "number" ? m.mcapUsd : null)}</td><td>{usd(m.volume24hUsd)}</td><td>{usd(m.liquidityUsd)}</td>
       <td>{metric(m.top10Pct as MetricValue, "%")}</td><td>{metric(m.bundlePct as MetricValue, "%")}</td><td>{metric(m.totalFeesSol as MetricValue)}</td>
       <td>{m.dexPaid === true && <span className="tag auto">DEX PAID</span>}{m.cto === true && <span className="tag">CTO</span>}</td>
       <td>{row.evaluation.map((item) => <span key={item.presetId} className={`outcome ${item.outcome}`} title={explain(item.results)}>{item.name}: {OUTCOME[item.outcome]}</span>)}{row.lastError && <small className="field-hint" title={row.lastError}> · lỗi</small>}</td>

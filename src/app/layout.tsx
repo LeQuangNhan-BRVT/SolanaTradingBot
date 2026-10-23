@@ -14,12 +14,14 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import "./watch.css";
 import "./trade.css";
 import "./shell.css";
+import "./token.css";
 import { hasDatabase } from "@/db/client";
 import { getTradingControls } from "@/db/repository";
 import { AppShell } from "@/components/app-shell";
 import { FeedbackProvider } from "@/components/feedback";
 import { THEME_BOOT_SCRIPT } from "@/components/theme-toggle";
 import { WalletProviders } from "@/components/wallet-providers";
+import { TradeDrawerProvider } from "@/components/trade-drawer";
 export const metadata: Metadata = { title: "Aegis — Solana Trading Terminal", description: "Post-migration memecoin research and paper-trading terminal" };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -29,6 +31,6 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   // suppressHydrationWarning: the boot script may set data-theme on <html> before React hydrates.
   return <html lang="vi" suppressHydrationWarning>
     <head><script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }}/></head>
-    <body><WalletProviders><FeedbackProvider><AppShell status={status}>{children}</AppShell></FeedbackProvider></WalletProviders></body>
+    <body><WalletProviders><FeedbackProvider><TradeDrawerProvider><AppShell status={status}>{children}</AppShell></TradeDrawerProvider></FeedbackProvider></WalletProviders></body>
   </html>;
 }

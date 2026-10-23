@@ -12,9 +12,12 @@ const TYPES: Array<{ value: FormType; label: string; sell: boolean }> = [
   { value: "trailing_stop", label: "Trailing stop", sell: true },
 ];
 
-function McapField({ label, value, onChange, hint }: { label: string; value: string; onChange: (value: string) => void; hint?: string }) {
+// Offsets are percentages of the current market cap, offered as one-click fills.
+function McapField({ label, value, onChange, hint, base, offsets = [] }: { label: string; value: string; onChange: (value: string) => void; hint?: string; base?: number | null; offsets?: number[] }) {
   const parsed = parseMcapInput(value);
-  return <label>{label}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder="ví dụ 2.5M, 750k" inputMode="decimal"/><small className="field-hint">{value ? parsed ? `= ${formatMcap(parsed)}` : "Không đọc được giá trị" : hint ?? ""}</small></label>;
+  return <div className="mcap-field"><label>{label}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder="ví dụ 2.5M, 750k" inputMode="decimal"/><small className="field-hint">{value ? parsed ? `= ${formatMcap(parsed)}` : "Không đọc được giá trị" : hint ?? ""}</small></label>
+    {base && offsets.length > 0 && <div className="pct-buttons" role="group" aria-label={`Gợi ý cho ${label}`}>{offsets.map((offset) => { const target = formatMcap(base * (1 + offset / 100)); return <button key={offset} type="button" className={`tab-button${value === target ? " active" : ""}`} aria-pressed={value === target} onClick={() => onChange(target)}>{offset > 0 ? "+" : "−"}{Math.abs(offset)}%</button>; })}</div>}
+  </div>;
 }
 
 export type TriggerTarget = { id: string; label: string; mode: "shadow" | "live" };
@@ -49,8 +52,8 @@ export function TriggerForm({ mint, currentMcapUsd, targets, hasShadowPosition, 
     {isSell && target?.mode === "live" && <p className="form-message">Vị thế ví trình duyệt: khi chạm ngưỡng app chỉ gửi cảnh báo và nút &quot;Bán ngay&quot; — bạn ký trên ví để bán.</p>}
     {type === "limit_buy" && !eligible && <p className="form-message">⚠ Token chưa vượt hard gate (chưa eligible). Lệnh vẫn được phép theo cài đặt của bạn, nhưng rủi ro rất cao.</p>}
     <div className="watch-form-grid">
-      {(type === "limit_buy" || type === "take_profit" || type === "stop_loss") && <McapField label={type === "limit_buy" ? "Mua khi mcap ≤" : type === "take_profit" ? "Bán khi mcap ≥" : "Bán khi mcap ≤"} value={mcap} onChange={setMcap}/>}
-      {type === "bracket" && <><McapField label="Take profit khi mcap ≥" value={tp} onChange={setTp}/><McapField label="Stop loss khi mcap ≤" value={sl} onChange={setSl}/></>}
+      {(type === "limit_buy" || type === "take_profit" || type === "stop_loss") && <McapField label={type === "limit_buy" ? "Mua khi mcap ≤" : type === "take_profit" ? "Bán khi mcap ≥" : "Bán khi mcap ≤"} value={mcap} onChange={setMcap} base={currentMcapUsd} offsets={type === "take_profit" ? [25, 50, 100] : type === "stop_loss" ? [-15, -20, -30] : [-10, -20, -30]}/>}
+      {type === "bracket" && <><McapField label="Take profit khi mcap ≥" value={tp} onChange={setTp} base={currentMcapUsd} offsets={[25, 50, 100]}/><McapField label="Stop loss khi mcap ≤" value={sl} onChange={setSl} base={currentMcapUsd} offsets={[-15, -20, -30]}/></>}
       {type === "trailing_stop" && <label>Bán khi giảm % từ đỉnh<input inputMode="decimal" value={trailingPct} onChange={(event) => setTrailingPct(event.target.value)}/></label>}
       {type === "limit_buy" && <label>Số SOL mua<input inputMode="decimal" value={buySol} onChange={(event) => setBuySol(event.target.value)}/></label>}
       {isSell && <label>% vị thế bán<input inputMode="decimal" value={sellPct} onChange={(event) => setSellPct(event.target.value)}/></label>}

@@ -734,6 +734,12 @@ export async function deleteDiscoveredToken(id: string) {
   await getDatabase().delete(discoveredTokens).where(eq(discoveredTokens.id, id));
 }
 
+// Every order for one token across modes, newest first, with the fill when there is one.
+export async function listTokenOrders(mint: string, limit = 50) {
+  if (!hasDatabase()) return [];
+  return getDatabase().select({ id: orders.id, mode: orders.mode, origin: orders.origin, side: orders.side, status: orders.status, requestedAmountRaw: orders.requestedAmountRaw, signature: orders.signature, error: orders.error, createdAt: orders.createdAt, quoteRaw: orders.quoteRaw, fillTokenRaw: fills.baseAmountRaw, fillLamports: fills.quoteAmountRaw, feeLamports: fills.feeLamports }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).leftJoin(fills, eq(fills.orderId, orders.id)).where(eq(tokens.mint, mint)).orderBy(desc(orders.createdAt)).limit(limit);
+}
+
 // ---------- Global search (command palette) ----------
 // Escapes LIKE wildcards so user input matches literally (Postgres' default LIKE escape is a backslash).
 const escapeLike = (query: string) => query.replace(/[\\%_]/g, (char) => "\\" + char);
