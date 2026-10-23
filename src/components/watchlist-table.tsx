@@ -81,7 +81,7 @@ export function WatchlistTable({ candidates, archived, initialTag }: { candidate
         </div>
       </div>
     </div>
-    <div className="table-wrap"><table><thead><tr>{header("symbol", "Token")}{COLUMNS.filter((column) => columns.has(column.key)).map((column) => header(column.key, column.label, column.sortable))}<th><span className="sr-only">Thao tác</span></th></tr></thead>
+    <div className="table-wrap"><table className="watch-table"><thead><tr>{header("symbol", "Token")}{COLUMNS.filter((column) => columns.has(column.key)).map((column) => header(column.key, column.label, column.sortable))}<th><span className="sr-only">Thao tác</span></th></tr></thead>
       <tbody>{rows.length === 0 ? <tr><td colSpan={columns.size + 2}>{candidates.length === 0 ? (archived ? "Chưa có token nào được lưu trữ." : "Chưa có token. Hãy thêm CA hoặc bật Khám phá để bắt đầu.") : "Không có token khớp bộ lọc."}</td></tr> : rows.map((token) => <TokenRow key={token.mint} token={token} columns={columns}/>)}</tbody>
     </table></div>
     <p className="table-count">{rows.length === candidates.length ? `${candidates.length} token` : `${rows.length} / ${candidates.length} token`}</p>

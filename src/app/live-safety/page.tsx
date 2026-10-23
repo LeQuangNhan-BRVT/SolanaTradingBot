@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { getLiveSpentTodayLamports, getRuntimeValue, getTradingControls, listRecentLiveOrders } from "@/db/repository";
 import { liveTradingConfigError } from "@/lib/live";
 import { liveLimitsFromEnv } from "@/lib/live-safety";
@@ -15,7 +15,7 @@ const statusLabel: Record<string, string> = { quoted: "Đã reserve", simulated:
 export default async function LiveSafetyPage() {
   const [controls, spent, reconciliation, orders] = await Promise.all([getTradingControls(), getLiveSpentTodayLamports(), getRuntimeValue<Reconciliation>("live-reconciliation"), listRecentLiveOrders()]);
   const limits = liveLimitsFromEnv(), configError = liveTradingConfigError(), pending = orders.filter((order) => ["quoted", "simulated", "submitted"].includes(order.status));
-  return <main className="positions-shell"><header className="detail-top"><Link href="/"><ArrowLeft size={16}/> Tổng quan</Link><span className={`mode-pill${controls.haltAll ? " halted" : ""}`}>{controls.haltAll ? "TRADING HALTED" : configError ? "LIVE DISABLED" : "LIVE ARMED"}</span></header><div className="positions-content">
+  return <main className="positions-shell"><header className="detail-top"><span className={`mode-pill${controls.haltAll ? " halted" : ""}`}>{controls.haltAll ? "TRADING HALTED" : configError ? "LIVE DISABLED" : "LIVE ARMED"}</span></header><div className="positions-content">
     <div className="page-title"><div><span className="eyebrow">LIVE SAFETY</span><h1>An toàn giao dịch live</h1><p>{configError ? `Live chưa bật: ${configError}` : "Live đang được cấu hình. Mọi lệnh đều qua giới hạn cứng, kill switch và job phục hồi."}</p></div><div className="title-actions"><EntryControls initialPaused={controls.entriesPaused} initialHalted={controls.haltAll}/></div></div>
     <section className="position-metrics">
       <article><span>Trạng thái</span><strong className={controls.haltAll ? "pnl-negative" : controls.entriesPaused ? "" : "pnl-positive"}>{controls.haltAll ? "Chặn tuyệt đối" : controls.entriesPaused ? "Pause entry" : "Đang chạy"}</strong><small className="field-hint">{controls.reason ?? ""}</small></article>

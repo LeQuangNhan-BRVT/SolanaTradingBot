@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { getTrackedWallet, listWatchedMints } from "@/db/repository";
 import { fetchTokenPrices, formatUnits, getWalletActivity, getWalletHoldings, summarizeTradedTokens, WSOL_MINT, type TokenPrice, type WalletChange } from "@/lib/wallet-tracker";
 import { AddToWatchlistButton } from "@/components/watch-actions";
@@ -35,7 +35,7 @@ export default async function WalletDetail({ params }: { params: Promise<{ addre
   const total = [solUsd, ...tokenRows.map((item) => item.usd)].reduce<number>((sum, item) => sum + (item ?? 0), 0);
   const watchCell = (mint: string) => { const state = watched.get(mint); return state ? <Link href={`/tokens/${mint}`}>{state.archived ? "Đã lưu trữ" : "Trong watchlist"}</Link> : <AddToWatchlistButton mint={mint}/>; };
 
-  return <main className="positions-shell"><header className="detail-top"><Link href="/wallets"><ArrowLeft size={16}/> Ví theo dõi</Link><span className="mode-pill">WATCH-ONLY</span></header><div className="positions-content">
+  return <main className="positions-shell"><header className="detail-top"><nav className="breadcrumb" aria-label="Breadcrumb"><Link href="/wallets">Ví theo dõi</Link><span aria-hidden="true">/</span><span aria-current="page">Chi tiết ví</span></nav><span className="mode-pill">WATCH-ONLY</span></header><div className="positions-content">
     <div className="page-title"><div><span className="eyebrow">WALLET</span><h1>{wallet.label ?? "Ví không tên"}</h1><p><code>{wallet.address}</code> <a className="external" href={`https://solscan.io/account/${wallet.address}`} target="_blank" rel="noreferrer">Solscan <ExternalLink size={11}/></a></p></div><div className="title-actions"><RemoveWalletButton address={wallet.address} label={wallet.label ?? short(wallet.address)}/></div></div>
     <section className="position-metrics"><article><span>SOL</span><strong>{holdings.value ? sol(holdings.value.lamports) : "—"}</strong></article><article><span>Số token đang nắm</span><strong>{holdings.value ? tokenRows.length : "—"}</strong></article><article><span>Giá trị ước tính</span><strong>{holdings.value && prices.value ? usd(total) : "—"}</strong></article><article><span>Token đã giao dịch (gần đây)</span><strong>{activity.value ? traded.length : "—"}</strong></article></section>
     {[holdings.error && `Không đọc được số dư: ${holdings.error}`, activity.error && `Không đọc được lịch sử: ${activity.error}`, prices.error && `Không lấy được giá: ${prices.error}`].filter(Boolean).map((message) => <p key={String(message)} className="form-message wallet-error">{message}</p>)}

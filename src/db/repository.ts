@@ -10,6 +10,7 @@ import type { MigrationInspection } from "@/lib/migration";
 import type { CreatorInspection } from "@/lib/creator";
 import type { HolderGraph } from "@/lib/graph";
 import type { BundleAssessment } from "@/lib/bundle";
+import type { AttentionData } from "@/lib/attention";
 import type { JupiterQuote } from "@/lib/shadow";
 import type { LiveSwapExecution, PreparedSwap } from "@/lib/live";
 import type { EntryDecision, PortfolioState } from "@/lib/strategy";
@@ -738,6 +739,27 @@ export async function deleteDiscoveredToken(id: string) {
 export async function listTokenOrders(mint: string, limit = 50) {
   if (!hasDatabase()) return [];
   return getDatabase().select({ id: orders.id, mode: orders.mode, origin: orders.origin, side: orders.side, status: orders.status, requestedAmountRaw: orders.requestedAmountRaw, signature: orders.signature, error: orders.error, createdAt: orders.createdAt, quoteRaw: orders.quoteRaw, fillTokenRaw: fills.baseAmountRaw, fillLamports: fills.quoteAmountRaw, feeLamports: fills.feeLamports }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).leftJoin(fills, eq(fills.orderId, orders.id)).where(eq(tokens.mint, mint)).orderBy(desc(orders.createdAt)).limit(limit);
+}
+
+// Raw rows for the dashboard "Cần chú ý" panel; src/lib/attention.ts ranks them.
+export async function getAttentionData(windowHours = 24): Promise<AttentionData> {
+  const empty: AttentionData = { triggeredAlerts: [], pendingOrders: [], failedOrders: [], triggerEvents: [], priceAlerts: [], discovery: [] };
+  if (!hasDatabase()) return empty;
+  const db = getDatabase(), since = sql`now() - (${windowHours} * interval '1 hour')`;
+  const [triggeredAlerts, pendingOrders, failedOrders, triggerEvents, alertTokens, discovery] = await Promise.all([
+    db.select({ id: triggerOrders.id, mint: tokens.mint, symbol: tokens.symbol, type: triggerOrders.type, sellPctBps: triggerOrders.sellPctBps, triggeredAt: triggerOrders.triggeredAt }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(and(eq(triggerOrders.mode, "live"), eq(triggerOrders.status, "triggered"))).orderBy(desc(triggerOrders.triggeredAt)).limit(20),
+    // A short grace period keeps an order the user is signing right now out of the list.
+    db.select({ id: orders.id, mint: tokens.mint, symbol: tokens.symbol, side: orders.side, status: orders.status, origin: orders.origin, updatedAt: orders.updatedAt }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.mode, "live"), inArray(orders.status, [...PENDING_LIVE_STATUSES]), sql`${orders.updatedAt} < now() - interval '2 minutes'`)).orderBy(desc(orders.updatedAt)).limit(20),
+    db.select({ id: orders.id, mint: tokens.mint, symbol: tokens.symbol, side: orders.side, mode: orders.mode, error: orders.error, updatedAt: orders.updatedAt }).from(orders).innerJoin(tokens, eq(orders.tokenId, tokens.id)).where(and(eq(orders.status, "failed"), sql`${orders.updatedAt} > ${since}`)).orderBy(desc(orders.updatedAt)).limit(20),
+    db.select({ id: triggerOrders.id, mint: tokens.mint, symbol: tokens.symbol, type: triggerOrders.type, status: triggerOrders.status, mode: triggerOrders.mode, lastError: triggerOrders.lastError, at: triggerOrders.updatedAt }).from(triggerOrders).innerJoin(tokens, eq(triggerOrders.tokenId, tokens.id)).where(and(inArray(triggerOrders.status, ["filled", "failed", "expired"]), sql`${triggerOrders.updatedAt} > ${since}`)).orderBy(desc(triggerOrders.updatedAt)).limit(20),
+    db.select({ id: tokens.id, mint: tokens.mint, symbol: tokens.symbol, alertPriceAboveUsd: tokens.alertPriceAboveUsd, alertPriceBelowUsd: tokens.alertPriceBelowUsd, alertChange1hPct: tokens.alertChange1hPct }).from(tokens).where(and(isNull(tokens.archivedAt), sql`(${tokens.alertPriceAboveUsd} is not null or ${tokens.alertPriceBelowUsd} is not null or ${tokens.alertChange1hPct} is not null)`)).limit(100),
+    db.select({ mint: discoveredTokens.mint, symbol: discoveredTokens.symbol, status: discoveredTokens.status, at: sql<Date>`coalesce(${discoveredTokens.promotedAt}, ${discoveredTokens.updatedAt})`.mapWith((value: string | Date) => new Date(value)) }).from(discoveredTokens).where(sql`(${discoveredTokens.status} = 'promoted' and ${discoveredTokens.promotedAt} > ${since}) or (${discoveredTokens.status} = 'archived' and ${discoveredTokens.updatedAt} > ${since})`).orderBy(desc(discoveredTokens.updatedAt)).limit(20),
+  ]);
+  const priceAlerts = await Promise.all(alertTokens.map(async ({ id, ...config }) => {
+    const [pool] = await db.select({ priceUsd: pools.priceUsd, priceChange1h: pools.priceChange1h }).from(pools).where(eq(pools.tokenId, id)).orderBy(desc(pools.liquidityUsd)).limit(1);
+    return { ...config, priceUsd: pool?.priceUsd ?? null, priceChange1h: pool?.priceChange1h ?? null };
+  }));
+  return { triggeredAlerts, pendingOrders, failedOrders, triggerEvents, priceAlerts, discovery };
 }
 
 // ---------- Global search (command palette) ----------

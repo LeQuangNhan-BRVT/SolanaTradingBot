@@ -1,5 +1,3 @@
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
 import { getDiscoverySettings, getDiscoveryStats, getRuntimeValue, listDiscoveredTokens, listFilterPresets } from "@/db/repository";
 import { DiscoverySettingsForm, DiscoveryTable, type DiscoveredRow } from "@/components/discovery-controls";
 import { PresetEditor, type PresetRow } from "@/components/preset-editor";
@@ -14,7 +12,7 @@ export default async function DiscoveryPage({ searchParams }: { searchParams: Pr
   // Before the worker has seeded it, show the default preset so the editor starts from the user's prefilter.
   const presets: PresetRow[] = presetsRaw.length ? presetsRaw.flatMap((row) => { const parsed = filterGroupSchema.safeParse(row.rules); return parsed.success ? [{ id: row.id, name: row.name, rules: parsed.data, enabled: row.enabled, autoPromote: row.autoPromote }] : []; }) : [{ id: "", name: DEFAULT_PRESET.name, rules: DEFAULT_PRESET.rules, enabled: true, autoPromote: true }];
   const rows: DiscoveredRow[] = tokens.map((token) => ({ mint: token.mint, symbol: token.symbol, name: token.name, status: token.status, migratedAt: token.migratedAt.toISOString(), metrics: token.metrics as DiscoveredRow["metrics"], evaluation: token.evaluation as unknown as DiscoveredRow["evaluation"], lastError: token.lastError }));
-  return <main className="positions-shell"><header className="detail-top"><Link href="/"><ArrowLeft size={16}/> Tổng quan</Link><span className={`mode-pill${settings.enabled ? "" : " paused"}`}>{settings.enabled ? "DISCOVERY ON" : "DISCOVERY OFF"}</span></header><div className="positions-content">
+  return <main className="positions-shell"><header className="detail-top"><span className={`mode-pill${settings.enabled ? "" : " paused"}`}>{settings.enabled ? "DISCOVERY ON" : "DISCOVERY OFF"}</span></header><div className="positions-content">
     <div className="page-title"><div><span className="eyebrow">MIGRATION DISCOVERY</span><h1>Hộp khám phá</h1><p>Mọi token migrate từ Pump.fun sang PumpSwap được ghi vào đây. Token trượt mọi preset bị xóa ngay; token đạt tự vào watchlist (auto-trade tắt) và được xác minh sâu; token trong watchlist không còn đạt preset sẽ tự được lưu trữ.</p></div></div>
     <section className="position-metrics">
       <article><span>Migrate 24h qua</span><strong>{stats.last24h}</strong></article>

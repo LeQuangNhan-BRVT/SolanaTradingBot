@@ -25,6 +25,8 @@ function toScaled(value: string) {
   const [whole, fraction = ""] = value.split(".");
   return BigInt(whole + fraction.padEnd(SCALE, "0").slice(0, SCALE));
 }
+// Postgres numerics come back padded ("0.010000000000000000"); trim them for messages.
+const plain = (value: string) => value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
 export const compareDecimal = (a: string, b: string) => { const x = toScaled(a), y = toScaled(b); return x === y ? 0 : x > y ? 1 : -1; };
 
 export type WatchAlertConfig = { mint: string; symbol: string; alertPriceAboveUsd: string | null; alertPriceBelowUsd: string | null; alertChange1hPct: string | null };
@@ -33,9 +35,9 @@ export type WatchAlert = { kind: "price_above" | "price_below" | "change_1h"; me
 export function evaluateWatchAlerts(config: WatchAlertConfig, market: { priceUsd: string | null; priceChange1h: number | null }): WatchAlert[] {
   const alerts: WatchAlert[] = [];
   if (market.priceUsd !== null) {
-    if (config.alertPriceAboveUsd !== null && compareDecimal(market.priceUsd, config.alertPriceAboveUsd) >= 0) alerts.push({ kind: "price_above", message: `${config.symbol} giá $${market.priceUsd} ≥ ngưỡng $${config.alertPriceAboveUsd}.` });
-    if (config.alertPriceBelowUsd !== null && compareDecimal(market.priceUsd, config.alertPriceBelowUsd) <= 0) alerts.push({ kind: "price_below", message: `${config.symbol} giá $${market.priceUsd} ≤ ngưỡng $${config.alertPriceBelowUsd}.` });
+    if (config.alertPriceAboveUsd !== null && compareDecimal(market.priceUsd, config.alertPriceAboveUsd) >= 0) alerts.push({ kind: "price_above", message: `${config.symbol} giá $${plain(market.priceUsd)} ≥ ngưỡng $${plain(config.alertPriceAboveUsd)}.` });
+    if (config.alertPriceBelowUsd !== null && compareDecimal(market.priceUsd, config.alertPriceBelowUsd) <= 0) alerts.push({ kind: "price_below", message: `${config.symbol} giá $${plain(market.priceUsd)} ≤ ngưỡng $${plain(config.alertPriceBelowUsd)}.` });
   }
-  if (config.alertChange1hPct !== null && market.priceChange1h !== null && Math.abs(market.priceChange1h) >= Number(config.alertChange1hPct)) alerts.push({ kind: "change_1h", message: `${config.symbol} biến động ${market.priceChange1h.toFixed(2)}% trong 1h (ngưỡng ±${config.alertChange1hPct}%).` });
+  if (config.alertChange1hPct !== null && market.priceChange1h !== null && Math.abs(market.priceChange1h) >= Number(config.alertChange1hPct)) alerts.push({ kind: "change_1h", message: `${config.symbol} biến động ${market.priceChange1h.toFixed(2)}% trong 1h (ngưỡng ±${plain(config.alertChange1hPct)}%).` });
   return alerts;
 }

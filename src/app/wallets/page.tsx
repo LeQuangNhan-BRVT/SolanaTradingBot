@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, Eye } from "lucide-react";
+import { Eye } from "lucide-react";
 import { listTrackedWallets } from "@/db/repository";
 import { formatUnits, getWalletBalances } from "@/lib/wallet-tracker";
 import { AddWalletForm, RemoveWalletButton } from "@/components/wallet-controls";
@@ -10,7 +10,7 @@ export default async function WalletsPage() {
   const wallets = await listTrackedWallets();
   let balances = new Map<string, string>(), balanceError: string | null = null;
   try { balances = await getWalletBalances(wallets.map((wallet) => wallet.address)); } catch (error) { balanceError = error instanceof Error ? error.message : String(error); }
-  return <main className="positions-shell"><header className="detail-top"><Link href="/"><ArrowLeft size={16}/> Tổng quan</Link><span className="mode-pill">WATCH-ONLY</span></header><div className="positions-content">
+  return <main className="positions-shell"><header className="detail-top"><span className="mode-pill">WATCH-ONLY</span></header><div className="positions-content">
     <div className="page-title"><div><span className="eyebrow">TRACKED WALLETS</span><h1>Ví theo dõi</h1><p>Chỉ lưu địa chỉ public. Ứng dụng không bao giờ yêu cầu private key ở đây.</p></div></div>
     <section className="panel wallet-panel"><div className="panel-head"><div><span className="eyebrow">ADD WALLET</span><h2>Thêm ví chỉ xem</h2></div></div><AddWalletForm/></section>
     <section className="panel"><div className="panel-head"><div><span className="eyebrow">WALLET LIST</span><h2>Danh sách ví</h2></div><span>{wallets.length} ví</span></div>
