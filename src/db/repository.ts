@@ -733,3 +733,22 @@ export async function deleteDiscoveredToken(id: string) {
   if (!hasDatabase()) return;
   await getDatabase().delete(discoveredTokens).where(eq(discoveredTokens.id, id));
 }
+
+// ---------- Global search (command palette) ----------
+// Escapes LIKE wildcards so user input matches literally (Postgres' default LIKE escape is a backslash).
+const escapeLike = (query: string) => query.replace(/[\\%_]/g, (char) => "\\" + char);
+const likePattern = (query: string) => `%${escapeLike(query)}%`;
+
+export async function searchEverything(query: string, limit = 6) {
+  const empty = { tokens: [], discovered: [], positions: [], wallets: [] };
+  if (!hasDatabase() || query.trim().length < 2) return empty;
+  const db = getDatabase(), pattern = likePattern(query.trim()), prefix = `${escapeLike(query.trim())}%`;
+  const tokenMatch = sql`(${tokens.symbol} ilike ${pattern} or ${tokens.name} ilike ${pattern} or ${tokens.mint} ilike ${prefix})`;
+  const [tokenRows, discoveredRows, positionRows, walletRows] = await Promise.all([
+    db.select({ mint: tokens.mint, symbol: tokens.symbol, name: tokens.name, status: tokens.status, archivedAt: tokens.archivedAt, pinned: tokens.pinned }).from(tokens).where(tokenMatch).orderBy(desc(tokens.pinned), desc(tokens.updatedAt)).limit(limit),
+    db.select({ mint: discoveredTokens.mint, symbol: discoveredTokens.symbol, name: discoveredTokens.name, status: discoveredTokens.status, migratedAt: discoveredTokens.migratedAt }).from(discoveredTokens).where(and(eq(discoveredTokens.status, "pending"), sql`(${discoveredTokens.symbol} ilike ${pattern} or ${discoveredTokens.name} ilike ${pattern} or ${discoveredTokens.mint} ilike ${prefix})`)).orderBy(desc(discoveredTokens.migratedAt)).limit(limit),
+    db.select({ id: positions.id, mode: positions.mode, origin: positions.origin, mint: tokens.mint, symbol: tokens.symbol }).from(positions).innerJoin(tokens, eq(positions.tokenId, tokens.id)).where(and(eq(positions.status, "open"), tokenMatch)).orderBy(desc(positions.openedAt)).limit(limit),
+    db.select({ address: trackedWallets.address, label: trackedWallets.label }).from(trackedWallets).where(sql`(${trackedWallets.label} ilike ${pattern} or ${trackedWallets.address} ilike ${prefix})`).limit(limit),
+  ]);
+  return { tokens: tokenRows, discovered: discoveredRows, positions: positionRows, wallets: walletRows };
+}

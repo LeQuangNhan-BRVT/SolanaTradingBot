@@ -1,9 +1,10 @@
 "use client";
 import { useFeedback } from "./feedback";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { ariaSort, matchesQuery, nextSort, sortRows, type SortState } from "@/lib/table-tools";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Search, X } from "lucide-react";
 import { FILTER_FIELDS, describeRule, type FilterField, type MetricValue, type RuleResult } from "@/lib/filter-rules";
 import { formatMcap } from "@/lib/triggers";
 
@@ -43,7 +44,14 @@ function metric(value: MetricValue | string | number | undefined, suffix = "") {
   if (typeof value === "number") return `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}${suffix}`;
   return String(value);
 }
-const usd = (value: unknown) => typeof value === "number" ? `$${value >= 1000 ? `${(value / 1000).toFixed(1)}K` : value.toFixed(0)}` : "—";
+const usd = (value: unknown) => typeof value === "number" ? formatMcap(value) : "—";
+type DiscoverySortKey = "symbol" | "migrated" | "mcap" | "volume" | "liquidity" | "top10" | "bundle" | "fees";
+// Fee lower bounds sort by their bound; anything else non-numeric sorts last.
+const num = (value: unknown) => typeof value === "number" ? value : value && typeof value === "object" && "lowerBound" in value ? Number((value as { lowerBound: number }).lowerBound) : null;
+const DISCOVERY_ACCESSORS: Record<DiscoverySortKey, (row: DiscoveredRow) => number | string | null> = {
+  symbol: (row) => row.symbol, migrated: (row) => new Date(row.migratedAt).getTime(), mcap: (row) => num(row.metrics.mcapUsd), volume: (row) => num(row.metrics.volume24hUsd),
+  liquidity: (row) => num(row.metrics.liquidityUsd), top10: (row) => num(row.metrics.top10Pct), bundle: (row) => num(row.metrics.bundlePct), fees: (row) => num(row.metrics.totalFeesSol),
+};
 const OUTCOME = { pass: "Đạt", fail: "Trượt", unknown: "Chưa rõ" } as const;
 
 function explain(results: RuleResult[]) {
@@ -54,12 +62,24 @@ export function DiscoveryTable({ rows }: { rows: DiscoveredRow[] }) {
   const router = useRouter();
   const { toast, confirm } = useFeedback();
   const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState(""), [outcome, setOutcome] = useState<"all" | "pass" | "unknown">("all"), [flag, setFlag] = useState<"dexPaid" | "cto" | null>(null), [sort, setSort] = useState<SortState<DiscoverySortKey>>({ key: "migrated", direction: "desc" });
+  const visible = useMemo(() => sortRows(rows.filter((row) => matchesQuery(query, [row.symbol, row.name, row.mint]) && (outcome === "all" || row.evaluation.some((item) => item.outcome === outcome)) && (!flag || row.metrics[flag] === true)), sort, DISCOVERY_ACCESSORS), [rows, query, outcome, flag, sort]);
+  const header = (key: DiscoverySortKey, label: string) => <th aria-sort={ariaSort(sort, key)}><button type="button" className={`sort-button${sort?.key === key ? " active" : ""}`} onClick={() => setSort(nextSort(sort, key))}>{label}<span aria-hidden="true">{sort?.key === key ? (sort.direction === "desc" ? " ↓" : " ↑") : " ↕"}</span></button></th>;
   async function promote(mint: string) {
     setBusy(mint);
     try { const response = await fetch(`/api/discovery/${mint}`, { method: "POST" }); const data = await response.json() as { message?: string; error?: string }; toast(response.ok ? data.message ?? "Đã thêm vào watchlist." : data.error ?? "Không thể thêm.", response.ok ? "success" : "error"); router.refresh(); } finally { setBusy(null); }
   }
   if (rows.length === 0) return <p className="empty-state wallet-hint">Chưa có token. Bật tự động phát hiện để worker bắt đầu theo dõi các lần migrate mới.</p>;
-  return <div className="table-wrap"><table className="compact-table discovery-table"><thead><tr><th>Token</th><th>Migrate</th><th>Mcap</th><th>Volume 24h</th><th>Liquidity</th><th>{FILTER_FIELDS.top10Pct.label}</th><th>Bundle</th><th>Fees (SOL)</th><th>Nhãn</th><th>Preset</th><th></th></tr></thead><tbody>{rows.map((row) => {
+  return <>
+    <div className="table-toolbar">
+      <label className="table-search"><Search size={15} aria-hidden="true"/><span className="sr-only">Lọc hộp khám phá</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Lọc theo symbol, tên, CA…"/>{query && <button type="button" className="clear-button" aria-label="Xóa ô lọc" onClick={() => setQuery("")}><X size={14} aria-hidden="true"/></button>}</label>
+      <div className="chip-row" role="group" aria-label="Lọc theo kết quả preset">
+        {([["all", "Tất cả"], ["pass", "Đạt preset"], ["unknown", "Chưa rõ"]] as const).map(([value, label]) => <button key={value} type="button" className={`chip${outcome === value ? " active" : ""}`} aria-pressed={outcome === value} onClick={() => setOutcome(value)}>{label}</button>)}
+        <button type="button" className={`chip${flag === "dexPaid" ? " active" : ""}`} aria-pressed={flag === "dexPaid"} onClick={() => setFlag(flag === "dexPaid" ? null : "dexPaid")}>DEX PAID</button>
+        <button type="button" className={`chip${flag === "cto" ? " active" : ""}`} aria-pressed={flag === "cto"} onClick={() => setFlag(flag === "cto" ? null : "cto")}>CTO</button>
+      </div>
+    </div>
+    <div className="table-wrap"><table className="compact-table discovery-table"><thead><tr>{header("symbol", "Token")}{header("migrated", "Migrate")}{header("mcap", "Mcap")}{header("volume", "Volume 24h")}{header("liquidity", "Liquidity")}{header("top10", FILTER_FIELDS.top10Pct.label)}{header("bundle", "Bundle")}{header("fees", "Fees (SOL)")}<th>Nhãn</th><th>Preset</th><th><span className="sr-only">Thao tác</span></th></tr></thead><tbody>{visible.length === 0 ? <tr><td colSpan={11}>Không có token khớp bộ lọc.</td></tr> : visible.map((row) => {
     const m = row.metrics;
     return <tr key={row.mint}>
       <td><strong>{row.symbol ?? "?"}</strong> <a className="external" href={`https://dexscreener.com/solana/${row.mint}`} target="_blank" rel="noreferrer">{row.mint.slice(0, 4)}…{row.mint.slice(-4)} <ExternalLink size={10}/></a></td>
@@ -69,7 +89,9 @@ export function DiscoveryTable({ rows }: { rows: DiscoveredRow[] }) {
       <td>{row.evaluation.map((item) => <span key={item.presetId} className={`outcome ${item.outcome}`} title={explain(item.results)}>{item.name}: {OUTCOME[item.outcome]}</span>)}{row.lastError && <small className="field-hint" title={row.lastError}> · lỗi</small>}</td>
       <td>{row.status === "promoted" ? <Link href={`/tokens/${row.mint}`}>Trong watchlist →</Link> : <button className="ghost-button small" disabled={busy === row.mint} onClick={() => void promote(row.mint)}>{busy === row.mint ? "Đang thêm…" : "+ Watchlist"}</button>}</td>
     </tr>;
-  })}</tbody></table></div>;
+  })}</tbody></table></div>
+    <p className="table-count">{visible.length === rows.length ? `${rows.length} token` : `${visible.length} / ${rows.length} token`}</p>
+  </>;
 }
 
 export const FIELD_LABEL = (field: FilterField) => FILTER_FIELDS[field].label;

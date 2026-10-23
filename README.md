@@ -87,6 +87,14 @@ Buy and sell from your own wallet (Phantom, Solflare, Backpack… detected throu
 
 Wallet data is read live from RPC on page load (Helius when `HELIUS_API_KEY` is set) and is not persisted.
 
+## Interface
+
+- **Themes.** Tối / Sáng / Hệ thống from the top bar; the choice is remembered per browser and applied before first paint. All colors are tokens in `src/app/theme.css`.
+- **Navigation.** A sidebar on every page (collapsible; a horizontal bar on phones) and a top bar with trading mode, paused/halted status, theme, wallet and logout.
+- **Command palette.** `Ctrl+K` / `⌘K` (or `/` when not typing) searches the watchlist, discovery inbox, open positions and tracked wallets. Pasting an unknown address offers "add this CA" or "track this wallet"; quick actions jump to buying or setting TP/SL for the top match.
+- **Tables.** The watchlist has an accent-insensitive filter, quick filters (status, AUTO, pinned, tags), sortable columns, a column chooser and saved views (stored per browser). The discovery inbox has a filter, outcome and DEX PAID / CTO filters and sortable metrics.
+- Confirmations and notifications use the app's own dialog and toasts.
+
 ## Analysis pipeline
 
 1. **CA submission** (`POST /api/candidates`) — reads mint/freeze authority, enriches market data, verifies the Pump.fun migration transaction on-chain and identifies the creator.

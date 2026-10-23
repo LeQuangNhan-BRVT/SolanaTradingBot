@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Crosshair, Eye, HeartPulse, ListOrdered, LogOut, PanelLeftClose, PanelLeftOpen, Radar, Settings, Shield, Wallet } from "lucide-react";
+import { Activity, Crosshair, Eye, HeartPulse, ListOrdered, LogOut, PanelLeftClose, PanelLeftOpen, Radar, Search, Settings, Shield, Wallet } from "lucide-react";
+import { CommandPalette } from "./command-palette";
 import { ThemeToggle } from "./theme-toggle";
 import { WalletButton } from "./wallet-providers";
 
@@ -25,8 +26,18 @@ export type ShellStatus = { mode: string; entriesPaused: boolean; haltAll: boole
 
 export function AppShell({ status, children }: { status: ShellStatus; children: React.ReactNode }) {
   const pathname = usePathname(), router = useRouter();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(false), [paletteOpen, setPaletteOpen] = useState(false);
   useEffect(() => { try { setCollapsed(localStorage.getItem("aegis-sidebar") === "collapsed"); } catch {} }, []);
+  // Ctrl/Cmd+K anywhere, or "/" when not typing, opens the command palette.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null, typing = target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPaletteOpen((open) => !open); }
+      else if (event.key === "/" && !typing && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); setPaletteOpen(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   if (pathname === "/login") return <>{children}</>;
   const toggle = () => { const next = !collapsed; setCollapsed(next); try { localStorage.setItem("aegis-sidebar", next ? "collapsed" : "open"); } catch {} };
   const isActive = (item: { href: string; match?: (path: string) => boolean }) => item.match ? item.match(pathname) : pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -43,6 +54,7 @@ export function AppShell({ status, children }: { status: ShellStatus; children: 
     </aside>
     <div className="shell-main">
       <header className="shell-topbar">
+        <button type="button" className="search-trigger" onClick={() => setPaletteOpen(true)} aria-label="Mở tìm kiếm nhanh (Ctrl K)"><Search size={15} aria-hidden="true"/><span>Tìm token, dán CA…</span><kbd>Ctrl K</kbd></button>
         <div className="shell-status">
           <span className={`status-pill mode-${status.mode}`}>{MODE_LABEL[status.mode] ?? status.mode.toUpperCase()}</span>
           {status.haltAll ? <Link href="/live-safety" className="status-pill danger">⛔ TRADING HALTED</Link> : status.entriesPaused ? <Link href="/live-safety" className="status-pill warn">⏸ ENTRIES PAUSED</Link> : null}
@@ -55,6 +67,7 @@ export function AppShell({ status, children }: { status: ShellStatus; children: 
         </div>
       </header>
       <div className="shell-content">{children}</div>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)}/>
     </div>
   </div>;
 }
