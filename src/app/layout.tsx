@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "./theme.css";
 import "./globals.css";
 import "./db-ui.css";
 import "./detail.css";
@@ -12,7 +13,22 @@ import "./login.css";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import "./watch.css";
 import "./trade.css";
-import { AdminLogout } from "@/components/admin-logout";
+import "./shell.css";
+import { hasDatabase } from "@/db/client";
+import { getTradingControls } from "@/db/repository";
+import { AppShell } from "@/components/app-shell";
+import { FeedbackProvider } from "@/components/feedback";
+import { THEME_BOOT_SCRIPT } from "@/components/theme-toggle";
 import { WalletProviders } from "@/components/wallet-providers";
 export const metadata: Metadata = { title: "Aegis — Solana Trading Terminal", description: "Post-migration memecoin research and paper-trading terminal" };
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) { return <html lang="vi"><body><WalletProviders>{children}</WalletProviders><AdminLogout/></body></html>; }
+
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const databaseConnected = hasDatabase();
+  const controls = databaseConnected ? await getTradingControls().catch(() => ({ entriesPaused: true, haltAll: false })) : { entriesPaused: true, haltAll: false };
+  const status = { mode: process.env.TRADING_MODE ?? "paper", entriesPaused: controls.entriesPaused, haltAll: controls.haltAll, databaseConnected };
+  // suppressHydrationWarning: the boot script may set data-theme on <html> before React hydrates.
+  return <html lang="vi" suppressHydrationWarning>
+    <head><script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }}/></head>
+    <body><WalletProviders><FeedbackProvider><AppShell status={status}>{children}</AppShell></FeedbackProvider></WalletProviders></body>
+  </html>;
+}

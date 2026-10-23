@@ -1,4 +1,5 @@
 "use client";
+import { useFeedback } from "./feedback";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -51,10 +52,11 @@ function explain(results: RuleResult[]) {
 
 export function DiscoveryTable({ rows }: { rows: DiscoveredRow[] }) {
   const router = useRouter();
+  const { toast, confirm } = useFeedback();
   const [busy, setBusy] = useState<string | null>(null);
   async function promote(mint: string) {
     setBusy(mint);
-    try { const response = await fetch(`/api/discovery/${mint}`, { method: "POST" }); const data = await response.json() as { message?: string; error?: string }; if (!response.ok) window.alert(data.error ?? "Không thể thêm."); router.refresh(); } finally { setBusy(null); }
+    try { const response = await fetch(`/api/discovery/${mint}`, { method: "POST" }); const data = await response.json() as { message?: string; error?: string }; toast(response.ok ? data.message ?? "Đã thêm vào watchlist." : data.error ?? "Không thể thêm.", response.ok ? "success" : "error"); router.refresh(); } finally { setBusy(null); }
   }
   if (rows.length === 0) return <p className="empty-state wallet-hint">Chưa có token. Bật tự động phát hiện để worker bắt đầu theo dõi các lần migrate mới.</p>;
   return <div className="table-wrap"><table className="compact-table discovery-table"><thead><tr><th>Token</th><th>Migrate</th><th>Mcap</th><th>Volume 24h</th><th>Liquidity</th><th>{FILTER_FIELDS.top10Pct.label}</th><th>Bundle</th><th>Fees (SOL)</th><th>Nhãn</th><th>Preset</th><th></th></tr></thead><tbody>{rows.map((row) => {

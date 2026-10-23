@@ -1,4 +1,5 @@
 "use client";
+import { useFeedback } from "./feedback";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -16,10 +17,11 @@ function condition(row: TriggerRow) {
 
 export function TriggerList({ rows, showToken = false }: { rows: TriggerRow[]; showToken?: boolean }) {
   const router = useRouter();
+  const { toast, confirm } = useFeedback();
   const [busy, setBusy] = useState<string | null>(null);
   async function cancel(id: string) {
     setBusy(id);
-    try { const response = await fetch(`/api/triggers/${id}`, { method: "DELETE" }); if (!response.ok) window.alert(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "Không thể hủy lệnh."); router.refresh(); } finally { setBusy(null); }
+    try { const response = await fetch(`/api/triggers/${id}`, { method: "DELETE" }); if (response.ok) toast("Đã hủy lệnh.", "success"); else toast(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "Không thể hủy lệnh.", "error"); router.refresh(); } finally { setBusy(null); }
   }
   if (rows.length === 0) return <p className="empty-state wallet-hint">Chưa có lệnh điều kiện.</p>;
   return <div className="table-wrap"><table className="compact-table"><thead><tr>{showToken && <th>Token</th>}<th>Loại</th><th>Điều kiện</th><th>Khối lượng</th><th>Mcap gần nhất</th><th>Trạng thái</th><th>Ghi chú</th><th></th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}>

@@ -6,5 +6,5 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
   const { view, tag } = await searchParams;
   const archived = view === "archived", connected = hasDatabase();
   const [candidates, controls] = connected ? await Promise.all([listCandidates({ archived }).catch(error => { console.error("Database read failed", error); return []; }), getTradingControls()]) : [[], { entriesPaused: true, haltAll: false }];
-  return <Dashboard candidates={candidates} databaseConnected={connected} entriesPaused={controls.entriesPaused} haltAll={controls.haltAll} archived={archived} activeTag={tag ?? null}/>;
+  return <Dashboard candidates={candidates} databaseConnected={connected} entriesPaused={controls.entriesPaused} haltAll={controls.haltAll} mode={process.env.TRADING_MODE ?? "paper"} archived={archived} activeTag={tag ?? null}/>;
 }

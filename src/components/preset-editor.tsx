@@ -1,4 +1,5 @@
 "use client";
+import { useFeedback } from "./feedback";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
@@ -36,6 +37,7 @@ function GroupEditor({ group, onChange, depth }: { group: FilterGroup; onChange:
 
 export function PresetEditor({ presets }: { presets: PresetRow[] }) {
   const router = useRouter();
+  const { confirm } = useFeedback();
   const blank: PresetRow = { id: "", name: "Preset mới", rules: { match: "all", rules: [newRule()] }, enabled: true, autoPromote: true };
   const [draft, setDraft] = useState<PresetRow>(presets[0] ?? blank);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<string | null>(null);
@@ -49,7 +51,7 @@ export function PresetEditor({ presets }: { presets: PresetRow[] }) {
     } catch { setMessage("Không thể kết nối máy chủ."); } finally { setBusy(false); }
   }
   async function remove() {
-    if (!draft.id || !window.confirm(`Xóa preset "${draft.name}"?`)) return;
+    if (!draft.id || !(await confirm({ title: `Xóa preset "${draft.name}"?`, message: "Token đã vào watchlist nhờ preset này sẽ không còn được tự lưu trữ theo nó.", confirmLabel: "Xóa preset", danger: true }))) return;
     setBusy(true);
     try { await fetch(`/api/discovery/presets?id=${draft.id}`, { method: "DELETE" }); setDraft(presets.find((preset) => preset.id !== draft.id) ?? blank); router.refresh(); } finally { setBusy(false); }
   }

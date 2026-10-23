@@ -1,15 +1,15 @@
 .manual-trade{display:grid;gap:12px}
 .manual-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.manual-head .wallet-adapter-button{height:36px;font-size:12px;border-radius:6px;background:#15211c;border:1px solid #2f5a45;color:#d9f8e9;padding:0 14px}
-.manual-head .wallet-adapter-button:not([disabled]):hover{background:#1b2b24}
+.manual-head .wallet-adapter-button{height:36px;font-size:12px;border-radius:6px;background:var(--accent-soft);border:1px solid var(--accent-line);color:var(--accent-text);padding:0 14px}
+.manual-head .wallet-adapter-button:not([disabled]):hover{background:var(--surface-2)}
 .pct-buttons{display:flex;gap:6px;align-items:flex-end}
-.trade-alert{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid #4a3820;background:#211a11;border-radius:8px;padding:10px 12px;color:var(--amber)}
-.trade-alert span{color:#c9b38a;font-size:11px}
+.trade-alert{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--warn-line);background:var(--warn-soft);border-radius:8px;padding:10px 12px;color:var(--amber)}
+.trade-alert span{color:var(--warn-text-2);font-size:11px}
 .trade-alert button{margin-left:auto}
 .trade-preview{margin:0 0 14px}
 .trade-preview div{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding:9px 0;font-size:12px}
 .trade-preview dt{color:var(--muted)}
 .trade-preview dd{margin:0;font-family:ui-monospace,monospace}
 .trade-result{display:grid;gap:8px}
-.check-row.fail span{color:#f3a0a0;font-size:11px}
-.target-select select{border:1px solid #2a3532;background:#0a0f0e;color:#e7efec;border-radius:6px;padding:8px 10px;font:inherit}
+.check-row.fail span{color:var(--danger);font-size:11px}
+.target-select select{border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:6px;padding:8px 10px;font:inherit}

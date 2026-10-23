@@ -1,4 +1,5 @@
 "use client";
+import { useFeedback } from "./feedback";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
@@ -25,6 +26,7 @@ export function AddWalletForm() {
 
 export function RemoveWalletButton({ address, label }: { address: string; label: string }) {
   const router = useRouter();
+  const { toast, confirm } = useFeedback();
   const [busy, setBusy] = useState(false);
-  return <button className="icon-button" disabled={busy} title="Bỏ theo dõi" aria-label={`Bỏ theo dõi ${label}`} onClick={async () => { if (!window.confirm(`Bỏ theo dõi ví ${label}?`)) return; setBusy(true); try { const response = await fetch(`/api/wallets/${address}`, { method: "DELETE" }); if (!response.ok) window.alert(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "Không thể xóa ví."); router.push("/wallets"); router.refresh(); } finally { setBusy(false); } }}><Trash2 size={15}/></button>;
+  return <button className="icon-button" disabled={busy} title="Bỏ theo dõi" aria-label={`Bỏ theo dõi ${label}`} onClick={async () => { if (!(await confirm({ title: `Bỏ theo dõi ví ${label}?`, message: "Chỉ xóa khỏi danh sách theo dõi; không ảnh hưởng tới ví hay vị thế.", confirmLabel: "Bỏ theo dõi", danger: true }))) return; setBusy(true); try { const response = await fetch(`/api/wallets/${address}`, { method: "DELETE" }); if (response.ok) toast("Đã bỏ theo dõi ví.", "success"); else toast(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "Không thể xóa ví.", "error"); router.push("/wallets"); router.refresh(); } finally { setBusy(false); } }}><Trash2 size={15}/></button>;
 }
